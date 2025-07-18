@@ -24,7 +24,6 @@ from vae_regression import data_generation
 from vae_regression import training
 
 from model_utils import utils
-from model_utils.models import GaussianDropout
 
 
 # generate data assuming an underlying latent space of dimension k
@@ -33,10 +32,11 @@ n_train = 100
 n_test = 200
 n_val = 200
 n = n_train + n_val + n_test
-p = 20
-p1 = 15
+p = 100
+p1 = 30
 p0 = p - p1
 n_timepoints = 4
+n_measurements = 5
 
 # custom W
 W = np.random.choice(
@@ -61,15 +61,20 @@ beta[2, 1:] = [0, 0, 0]
 
 beta_time = np.array([0, 1, 2, 0, -1])
 
-y, X, Z, beta = data_generation.longitudinal_data_generation(
-    n, k, p, n_timepoints,
+y, X, Z, beta = data_generation.multi_longitudinal_data_generation(
+    n, k, p, n_timepoints, n_measurements,
     noise_scale = 0.5,
     W=W,
     beta=beta,
     beta_time=beta_time
 )
 
-plt.plot(y[0:10, :].transpose())
+# one measurement
+plt.plot(y[0:10, 0, :].transpose())
+plt.show()
+
+# one patient
+plt.plot(y[0, :, :].transpose())
 plt.show()
 
 
@@ -102,6 +107,15 @@ val_dataloader = utils.make_data_loader(*tensor_data_val, batch_size=32)
 next(iter(train_dataloader))[0].shape  # X
 next(iter(train_dataloader))[1].shape  # y
 
+# x = next(iter(train_dataloader))[0]
+# x = x[0:3, :, :]
+# x.shape
+# x[0, 1, :] = np.nan
+# x[1, 2:4, :] = np.nan
+# 1 - np.isnan(x[:, :, 0])
+
+# x = torch.tensor(x)
+# torch.logical_not(torch.isnan(x[:, :, 0])) * x[:, :, 0]
 
 # VAE + regression
 class TimeAwareRegVAE(nn.Module):
@@ -109,7 +123,10 @@ class TimeAwareRegVAE(nn.Module):
         self,
         input_dim,          # Dimension of fixed input X (e.g., number of genes)
         latent_dim,         # Dimension of latent space Z
-        n_timepoints=5,     # Number of timepoints (T)
+        n_timepoints,     # Number of timepoints (T)
+        n_measurements,
+        input_to_latent_dim=32,
+        transformer_dim_feedforward=32,
         time_emb_dim=8,     # Dimension of time embeddings
         dropout_sigma=0.1,
         beta_vae=1.0
@@ -118,18 +135,21 @@ class TimeAwareRegVAE(nn.Module):
         
         self.beta = beta_vae
         self.n_timepoints = n_timepoints
+        self.n_measurements = n_measurements
 
         # --- VAE (unchanged) ---
-        self.fc_mu = nn.Linear(32, latent_dim)
-        self.fc_var = nn.Linear(32, latent_dim)
+        # Encoder
         self.encoder = nn.Sequential(
-            nn.Linear(input_dim, 32),
+            nn.Linear(input_dim, input_to_latent_dim),
             nn.ReLU()
         )
+        self.fc_mu = nn.Linear(input_to_latent_dim, latent_dim)
+        self.fc_var = nn.Linear(input_to_latent_dim, latent_dim)
+        # decoder
         self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, 32),
+            nn.Linear(latent_dim, input_to_latent_dim),
             nn.ReLU(),
-            nn.Linear(32, input_dim)
+            nn.Linear(input_to_latent_dim, input_dim)
         )
 
         # --- Time Embeddings ---
@@ -137,19 +157,19 @@ class TimeAwareRegVAE(nn.Module):
 
         # --- Latent-to-Outcome Mapping ---
         # Project latent features to a space compatible with time embeddings
-        self.latent_proj = nn.Linear(input_dim, 32)  # Projects x_hat
+        self.latent_proj = nn.Linear(input_dim, input_to_latent_dim)  # Projects x_hat
 
         # --- Time-Aware Prediction Head ---
         # Lightweight Transformer
         encoder_layer = TransformerEncoderLayer(
-            d_model=32 + time_emb_dim,  # Input dim (latent + time)
+            d_model=input_to_latent_dim + time_emb_dim,  # Input dim (latent + time)
             nhead=4,                    # Number of attention heads
-            dim_feedforward=32,
+            dim_feedforward=transformer_dim_feedforward,
             dropout=dropout_sigma,
             activation="gelu"
         )
         self.transformer = TransformerEncoder(encoder_layer, num_layers=1)
-        self.fc_out = nn.Linear(32 + time_emb_dim, 1)  # Predicts 1 value per timepoint
+        self.fc_out = nn.Linear(input_to_latent_dim + time_emb_dim, 1)  # Predicts 1 value per timepoint
 
         # Dropout
         self.dropout = nn.Dropout(dropout_sigma)
@@ -171,68 +191,81 @@ class TimeAwareRegVAE(nn.Module):
     def generate_causal_mask(self, T):
         return torch.triu(torch.ones(T, T) * float('-inf'), diagonal=1)
 
+    def generate_measurement_mask(self, batch_size, M):
+        return torch.ones([batch_size, M])
+
     def forward(self, x):
+        
+        batch_size, max_meas, input_dim = x.shape
+
+        # --- VAE Forward Pass ---
+        # Generate causal mask
+        causal_mask = self.generate_causal_mask(self.n_timepoints).to(x.device)
+
+        x_flat = x.view(-1, input_dim)  # (batch_size * max_measurements, input_dim)
+        mu, logvar = self.encode(x_flat)
+        z_hat = self.reparameterize(mu, logvar)
+        x_hat_flat = self.decode(z_hat)  # Shape: [batch_size, input_dim]
+        x_hat = x_hat_flat.view(batch_size, max_meas, input_dim)  # Reshape back
+
+        # --- Time-Aware Prediction ---
+        # Project latent features
+        h = self.latent_proj(x_hat_flat)  # Shape: [batch_size*M, 32]
+        h = h.unsqueeze(1).repeat(1, self.n_timepoints, 1)  # [batch_size*M, T, 32]
+
+        # Get time embeddings (for all timepoints)
+        time_ids = torch.arange(self.n_timepoints, device=x.device)  # [0, 1, ..., T-1]
+        time_embs = self.time_embedding(time_ids)  # [T, time_emb_dim]
+        time_embs = time_embs.unsqueeze(0).repeat(h.shape[0], 1, 1)  # [bs*M, T, time_emb_dim]
+
+        # Combine latent features and time embeddings
+        h_time = torch.cat([h, time_embs], dim=-1)  # [batch_size*M, T, 32 + time_emb_dim]
+
+        # Process temporally
+        # Transformer expects [T, batch_size, features]
+        h_time = h_time.transpose(0, 1)  # [T, batch_size*M, ...]
+        h_out = self.transformer(h_time, mask=causal_mask)  # [T, batch_size, ...]
+        h_out = h_out.transpose(0, 1)    # [batch_size*M, T, ...]
+
+        # Predict outcomes
+        y_hat_flat = self.fc_out(self.dropout(h_out)).squeeze(-1)  # [batch_size*M, T]
+        y_hat = y_hat_flat.view(batch_size, max_meas, self.n_timepoints)
+        
+        return x_hat, y_hat, mu, logvar
+
+    def predict(self, x):
+
         # --- VAE Forward Pass ---
         # Generate causal mask
         causal_mask = self.generate_causal_mask(self.n_timepoints).to(x.device)
 
         mu, logvar = self.encode(x)
         z_hat = self.reparameterize(mu, logvar)
-        x_hat = self.decode(z_hat)  # Shape: [batch_size, input_dim]
+        x_hat_flat = self.decode(z_hat)  # Shape: [batch_size, input_dim]
 
         # --- Time-Aware Prediction ---
         # Project latent features
-        h = self.latent_proj(x_hat)  # Shape: [batch_size, 32]
-        h = h.unsqueeze(1).repeat(1, self.n_timepoints, 1)  # [batch_size, T, 32]
+        h = self.latent_proj(x_hat_flat)  # Shape: [batch_size*M, 32]
+        h = h.unsqueeze(1).repeat(1, self.n_timepoints, 1)  # [batch_size*M, T, 32]
 
         # Get time embeddings (for all timepoints)
         time_ids = torch.arange(self.n_timepoints, device=x.device)  # [0, 1, ..., T-1]
         time_embs = self.time_embedding(time_ids)  # [T, time_emb_dim]
-        time_embs = time_embs.unsqueeze(0).repeat(x.size(0), 1, 1)  # [batch_size, T, time_emb_dim]
+        time_embs = time_embs.unsqueeze(0).repeat(h.shape[0], 1, 1)  # [bs*M, T, time_emb_dim]
 
         # Combine latent features and time embeddings
-        h_time = torch.cat([h, time_embs], dim=-1)  # [batch_size, T, 32 + time_emb_dim]
+        h_time = torch.cat([h, time_embs], dim=-1)  # [batch_size*M, T, 32 + time_emb_dim]
 
         # Process temporally
         # Transformer expects [T, batch_size, features]
-        h_time = h_time.transpose(0, 1)  # [T, batch_size, ...]
+        h_time = h_time.transpose(0, 1)  # [T, batch_size*M, ...]
         h_out = self.transformer(h_time, mask=causal_mask)  # [T, batch_size, ...]
-        h_out = h_out.transpose(0, 1)    # [batch_size, T, ...]
+        h_out = h_out.transpose(0, 1)    # [batch_size*M, T, ...]
 
         # Predict outcomes
-        y_hat = self.fc_out(self.dropout(h_out)).squeeze(-1)  # [batch_size, T]
+        y_hat_flat = self.fc_out(self.dropout(h_out)).squeeze(-1)  # [batch_size*M, T]
 
-        return x_hat, y_hat, mu, logvar
-
-    def predict(self, x):
-        # --- VAE Forward Pass ---
-        mu, logvar = self.encode(x)
-        z_hat = self.reparameterize(mu, logvar)
-        x_hat = self.decode(z_hat)  # Shape: [batch_size, input_dim]
-
-        # --- Time-Aware Prediction ---
-        # Project latent features
-        h = self.latent_proj(x_hat)  # Shape: [batch_size, 32]
-        h = h.unsqueeze(1).repeat(1, self.n_timepoints, 1)  # [batch_size, T, 32]
-
-        # Get time embeddings (for all timepoints)
-        time_ids = torch.arange(self.n_timepoints, device=x.device)  # [0, 1, ..., T-1]
-        time_embs = self.time_embedding(time_ids)  # [T, time_emb_dim]
-        time_embs = time_embs.unsqueeze(0).repeat(x.size(0), 1, 1)  # [batch_size, T, time_emb_dim]
-
-        # Combine latent features and time embeddings
-        h_time = torch.cat([h, time_embs], dim=-1)  # [batch_size, T, 32 + time_emb_dim]
-
-        # Process temporally
-        # Transformer expects [T, batch_size, features]
-        h_time = h_time.transpose(0, 1)  # [T, batch_size, ...]
-        h_out = self.transformer(h_time)  # [T, batch_size, ...]
-        h_out = h_out.transpose(0, 1)    # [batch_size, T, ...]
-
-        # Predict outcomes
-        y_hat = self.fc_out(self.dropout(h_out)).squeeze(-1)  # [batch_size, T]
-
-        return y_hat
+        return y_hat_flat
 
     def loss(self, m_out, x, y):
         # Reconstruction loss (MSE)
@@ -260,19 +293,75 @@ def loss_components(x, y, x_hat, y_hat, mu, logvar):
 # 4. Training Setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-latent_dim = k
+latent_dim = k * 2
 model = TimeAwareRegVAE(
     input_dim=p,
     latent_dim=latent_dim,
     n_timepoints=n_timepoints,
+    n_measurements=n_measurements,
+    input_to_latent_dim=32,
+    transformer_dim_feedforward=32,
     time_emb_dim=8,
     dropout_sigma=0.2,
     beta_vae=1.0
 ).to(device)
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
+
+
+#########################################################
+x = next(iter(train_dataloader))[0]
+batch_size, max_meas, input_dim = x.shape
+
+# --- VAE Forward Pass ---
+# Generate causal mask
+causal_mask = model.generate_causal_mask(model.n_timepoints).to(x.device)
+
+x_flat = x.view(-1, input_dim)  # (batch_size * max_measurements, input_dim)
+x_flat.shape
+mu, logvar = model.encode(x_flat)
+z_hat = model.reparameterize(mu, logvar)
+z_hat.shape
+x_hat_flat = model.decode(z_hat)  # Shape: [batch_size, input_dim]
+x_hat_flat.shape
+x_hat = x_hat_flat.view(batch_size, max_meas, input_dim)  # Reshape back
+x_hat.shape
+
+# --- Time-Aware Prediction ---
+# Project latent features
+h = model.latent_proj(x_hat_flat)  # Shape: [batch_size*M, 32]
+h.shape
+h = h.unsqueeze(1).repeat(1, model.n_timepoints, 1)  # [batch_size*M, T, 32]
+h.shape
+
+# Get time embeddings (for all timepoints)
+time_ids = torch.arange(model.n_timepoints, device=x.device)  # [0, 1, ..., T-1]
+time_embs = model.time_embedding(time_ids)  # [T, time_emb_dim]
+time_embs.shape
+time_embs = time_embs.unsqueeze(0).repeat(h.shape[0], 1, 1)  # [1, T, time_emb_dim]
+
+# Combine latent features and time embeddings
+h_time = torch.cat([h, time_embs], dim=-1)  # [batch_size*M, T, 32 + time_emb_dim]
+h_time.shape
+
+# Process temporally
+# Transformer expects [T, batch_size, features]
+h_time = h_time.transpose(0, 1)  # [T, batch_size*M, ...]
+h_out = model.transformer(h_time, mask=causal_mask)  # [T, batch_size, ...]
+h_out = h_out.transpose(0, 1)    # [batch_size*M, T, ...]
+h_out.shape
+
+# Predict outcomes
+y_hat_flat = model.fc_out(model.dropout(h_out)).squeeze(-1)  # [batch_size*M, T]
+y_hat_flat.shape
+y_hat = y_hat_flat.view(batch_size, max_meas, model.n_timepoints)
+y_hat.shape
+
+##########################################################3
+
+
 # 5. Training Loop
-num_epochs = 400
+num_epochs = 1000
 c_annealer = utils.CyclicAnnealer(cycle_length=num_epochs / 2, min_beta=0.0, max_beta=1.0, mode='cosine')
 # plt.plot([c_annealer.get_beta(ii) for ii in range(1,num_epochs)])
 # plt.show()
@@ -300,10 +389,10 @@ with torch.no_grad():
 if latent_dim == k:
     # 7. Evaluation (Compare with original Z)
     # Procrustes alignment
-    R, _ = orthogonal_procrustes(Z_hat, data_test[1])
-    Z_aligned = Z_hat @ R
+    R, _ = orthogonal_procrustes(Z_hat[:,1,:], data_test[1])
+    Z_aligned = Z_hat[:,1,:] @ R
 
-utils.print_correlations(data_test[1], Z_hat)
+utils.print_correlations(data_test[1], Z_hat[:,1,:])
 utils.print_correlations(data_test[1], Z_aligned)
 
 
@@ -316,8 +405,8 @@ plt.show()
 model.eval()
 with torch.no_grad():
     X_hat = model(tensor_data_test[0])[0].cpu().numpy()
-
-utils.print_correlations(data_test[0], X_hat)
+X_hat.shape
+np.corrcoef(data_test[0], X_hat, rowvar=False)
 
 # plot
 plt.scatter(X_hat[:, 0], data_test[0][:, 0])
@@ -337,7 +426,7 @@ print(loss_kl.mean())
 print(loss_x.mean())
 print(loss_y.mean())
 
-plt.plot(loss_y.squeeze().numpy(), linestyle="", marker="o")
+plt.plot(loss_y.squeeze().numpy()[:, 0, :], linestyle="", marker="o")
 plt.show()
 
 # loss X
@@ -359,7 +448,7 @@ x_train.requires_grad_(True)
 x_hat, y_hat, _, _ = model(x_train)
 
 t_point = 0
-y_hat[:, t_point].sum().backward()  # Focus on t=2
+y_hat[:, 0, t_point].sum().backward()  # Focus on t=2
 saliency = x_train.grad.abs().mean(dim=0)  # [input_dim]
 
 # Plot top features
@@ -410,15 +499,22 @@ def predict(x):
         preds = model.predict(x)
     return preds.numpy()
 
-predict(tensor_data_train[0]).shape
+# ---------- reshape data to long format for SHAP -------
+test_size, max_meas, input_dim = data_train[0].shape
+x_flat = tensor_data_train[0][0:50].view(-1, input_dim)  # (batch_size * max_measurements, input_dim)
+x_flat = x_flat.detach().numpy()
+x_flat.shape
+predict(x_flat).shape
 
 # Create KernelExplainer
-explainer = shap.KernelExplainer(predict, data_train[0])  # Using 100 samples as background
+explainer = shap.KernelExplainer(predict, x_flat)  # Using 100 samples as background
 # Deep explainer for NN
 # model.eval()
 # explainer = shap.DeepExplainer((model, model.fc1), X_train_tensor)
 
-samples_to_explain = data_test[0]
+samples_to_explain = tensor_data_test[0][0:100]
+samples_to_explain = samples_to_explain.view(-1, input_dim)  # (batch_size * max_measurements, input_dim)
+samples_to_explain = samples_to_explain.detach().numpy()
 samples_to_explain.shape
 
 shap_values = explainer.shap_values(samples_to_explain)
@@ -428,7 +524,7 @@ shap_values.shape
 feature_names = [f'Feature {i}' for i in range(p)]
 
 time_point = 0
-shap.summary_plot(shap_values[:,:,time_point], samples_to_explain, show = True)
+shap.summary_plot(shap_values[:, :, time_point], samples_to_explain, show = True)
 
 shap.plots.beeswarm(shap.Explanation(
     values=shap_values[:,:,time_point],
@@ -441,7 +537,7 @@ shap.plots.beeswarm(shap.Explanation(
 
 np.argmax(np.abs(shap_values[:,:,time_point]).sum(axis=0))
 
-feature = 13
+feature = 70
 fig = plt.figure()
 plt.violinplot(shap_values[:, feature, :])
 plt.xlabel("Time")
@@ -452,15 +548,15 @@ fig.show()
 
 
 shap.plots.heatmap(shap.Explanation(
-    values=shap_values, 
-    base_values=explainer.expected_value, 
+    values=shap_values[:,:,time_point], 
+    base_values=explainer.expected_value[time_point], 
     data=samples_to_explain, 
     feature_names=feature_names
     )
 )
 
 sample_ind = 0
-shap.force_plot(explainer.expected_value, shap_values[sample_ind, :], samples_to_explain[sample_ind, :], 
+shap.force_plot(explainer.expected_value[time_point], shap_values[sample_ind, :, time_point], samples_to_explain[sample_ind, :], 
     feature_names=[f'Feature {i}' for i in range(p)], matplotlib=True
 )
 

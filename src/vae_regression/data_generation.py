@@ -73,8 +73,62 @@ def longitudinal_data_generation(n, k, p, n_timepoints, noise_scale = 0.5, beta=
         beta_time = np.random.choice([-1, 1, 0], size=n_timepoints)
     y_time = np.zeros([n, n_timepoints])
     for tt in range(n_timepoints):
-        y_time[:, tt] = lin_pred + beta_time[tt]
+        y_time[:, tt] = lin_pred[:, tt] + beta_time[tt]
 
     y_time = y_time + np.random.normal(scale=noise_scale, size=[n, n_timepoints])
+
+    return y_time, X, Z, beta
+
+
+def multi_longitudinal_data_generation(
+    n, k, p, n_timepoints, n_measurements,
+    noise_scale = 0.5,
+    beta=None, W=None, beta_time=None
+):
+    # set the covariance matrix
+    cov_matrix = np.random.rand(k, k) * 0.1
+    cov_matrix = cov_matrix @ cov_matrix.T  # positive semi-definite
+    cov_matrix += 1 * np.diag(np.ones(k))
+    np.linalg.inv(cov_matrix)
+
+    # latent space
+    Z = np.random.multivariate_normal(mean=np.zeros(k), cov=cov_matrix, size=n)
+
+    # 2. Create transformation matrix W
+    if W is None:
+        W = np.random.normal(size=(k, p))
+
+        first_half = range(0, int(p/2))
+        second_half = range(int(p/2), p)
+        half_k = int(k / 2)
+
+        for k_i in range(0, half_k):
+            W[k_i, first_half] = 0.0
+        for k_i in range(half_k + 1, k):
+            W[k_i, second_half] = 0.0
+
+    # 3. Compute X = ZW + noise
+    X = np.zeros([n, n_measurements, p])
+    for m in range(n_measurements):
+        X[:, m, :] = Z @ W + np.random.normal(scale=noise_scale, size=(n, p))
+
+    # add outcome
+    if beta is None:
+        beta = np.random.choice([-1, 1, 0], size=k)
+
+    lin_pred = np.zeros([n, n_measurements, n_timepoints])
+    for m in range(n_measurements):
+        lin_pred[:, m, :] = Z @ beta
+    
+    # Generate longitudinal y
+    if beta_time is None:
+        beta_time = np.random.choice([-1, 1, 0], size=n_timepoints)
+    
+    y_time = np.zeros([n, n_measurements, n_timepoints])
+    for m in range(n_measurements):
+        for tt in range(n_timepoints):
+            y_time[:, m, tt] = lin_pred[:, m, tt] + beta_time[tt]
+
+    y_time = y_time + np.random.normal(scale=noise_scale, size=y_time.shape)
 
     return y_time, X, Z, beta
