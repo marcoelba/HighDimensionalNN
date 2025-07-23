@@ -32,15 +32,16 @@ n_train = 100
 n_test = 200
 n_val = 200
 n = n_train + n_val + n_test
-p = 100
+p = 500
 p1 = 30
 p0 = p - p1
 n_timepoints = 4
 n_measurements = 5
 
 # custom W
+np.random.seed(323425)
 W = np.random.choice(
-    [-2, -1.5, -1, -0.8, -0.5, 2, 1.5, 1, 0.8, 0.5],
+    [-1.5, -1, -0.8, -0.5, 1.5, 1, 0.8, 0.5],
     size=(k, p)
 )
 first_half = range(0, int(p/2))
@@ -50,7 +51,7 @@ second_half = range(int(p/2), p)
 # W[1, first_half] = 0.0
 # W[3, second_half] = 0.0
 # W[4, second_half] = 0.0
-# # first 10 features do NOT have any effect
+# # first p0 features do NOT have any effect
 W[:, 0:p0] = 0
 
 beta = np.array([-1, 1, -1, 1, -1])
@@ -70,7 +71,7 @@ y, X, Z, beta = data_generation.multi_longitudinal_data_generation(
 )
 
 # one measurement
-plt.plot(y[0:10, 0, :].transpose())
+plt.plot(y[0:5, 0, :].transpose())
 plt.show()
 
 # one patient
@@ -127,15 +128,22 @@ class TimeAwareRegVAE(nn.Module):
         n_measurements,
         input_to_latent_dim=32,
         transformer_dim_feedforward=32,
+        nhead=4,
         time_emb_dim=8,     # Dimension of time embeddings
         dropout_sigma=0.1,
-        beta_vae=1.0
+        beta_vae=1.0,
+        prediction_weight=1.0,
+        reconstruction_weight=1.0
     ):
         super(TimeAwareRegVAE, self).__init__()
         
         self.beta = beta_vae
+        self.reconstruction_weight = reconstruction_weight
+        self.prediction_weight = prediction_weight
         self.n_timepoints = n_timepoints
         self.n_measurements = n_measurements
+        self.nhead = nhead
+        self.transformer_input_dim = input_dim + time_emb_dim
 
         # --- VAE (unchanged) ---
         # Encoder
@@ -157,19 +165,19 @@ class TimeAwareRegVAE(nn.Module):
 
         # --- Latent-to-Outcome Mapping ---
         # Project latent features to a space compatible with time embeddings
-        self.latent_proj = nn.Linear(input_dim, input_to_latent_dim)  # Projects x_hat
+        # self.latent_proj = nn.Linear(input_dim, input_to_latent_dim)  # Projects x_hat
 
         # --- Time-Aware Prediction Head ---
         # Lightweight Transformer
         encoder_layer = TransformerEncoderLayer(
-            d_model=input_to_latent_dim + time_emb_dim,  # Input dim (latent + time)
-            nhead=4,                    # Number of attention heads
+            d_model=self.transformer_input_dim,  # Input dim
+            nhead=self.nhead,                    # Number of attention heads
             dim_feedforward=transformer_dim_feedforward,
             dropout=dropout_sigma,
             activation="gelu"
         )
         self.transformer = TransformerEncoder(encoder_layer, num_layers=1)
-        self.fc_out = nn.Linear(input_to_latent_dim + time_emb_dim, 1)  # Predicts 1 value per timepoint
+        self.fc_out = nn.Linear(self.transformer_input_dim, 1)  # Predicts 1 value per timepoint
 
         # Dropout
         self.dropout = nn.Dropout(dropout_sigma)
@@ -210,8 +218,9 @@ class TimeAwareRegVAE(nn.Module):
 
         # --- Time-Aware Prediction ---
         # Project latent features
-        h = self.latent_proj(x_hat_flat)  # Shape: [batch_size*M, 32]
-        h = h.unsqueeze(1).repeat(1, self.n_timepoints, 1)  # [batch_size*M, T, 32]
+        # h = self.latent_proj(x_hat_flat)  # Shape: [batch_size*M, 32]
+        # h = h.unsqueeze(1).repeat(1, self.n_timepoints, 1)  # [batch_size*M, T, 32]
+        h = x_hat_flat.unsqueeze(1).repeat(1, self.n_timepoints, 1)  # [batch_size*M, T, 32]
 
         # Get time embeddings (for all timepoints)
         time_ids = torch.arange(self.n_timepoints, device=x.device)  # [0, 1, ..., T-1]
@@ -245,8 +254,10 @@ class TimeAwareRegVAE(nn.Module):
 
         # --- Time-Aware Prediction ---
         # Project latent features
-        h = self.latent_proj(x_hat_flat)  # Shape: [batch_size*M, 32]
-        h = h.unsqueeze(1).repeat(1, self.n_timepoints, 1)  # [batch_size*M, T, 32]
+        # h = self.latent_proj(x_hat_flat)  # Shape: [batch_size*M, 32]
+        # h = h.unsqueeze(1).repeat(1, self.n_timepoints, 1)  # [batch_size*M, T, 32]
+
+        h = x_hat_flat.unsqueeze(1).repeat(1, self.n_timepoints, 1)  # [batch_size*M, T, 32]
 
         # Get time embeddings (for all timepoints)
         time_ids = torch.arange(self.n_timepoints, device=x.device)  # [0, 1, ..., T-1]
@@ -275,7 +286,7 @@ class TimeAwareRegVAE(nn.Module):
         # label prediction loss
         PredMSE = nn.functional.mse_loss(m_out[1], y, reduction='sum')
 
-        return BCE + self.beta * KLD + PredMSE
+        return self.reconstruction_weight * BCE + self.beta * KLD + self.prediction_weight * PredMSE
 
 
 def loss_components(x, y, x_hat, y_hat, mu, logvar):
@@ -294,16 +305,24 @@ def loss_components(x, y, x_hat, y_hat, mu, logvar):
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 latent_dim = k * 2
+# for the number of heads
+(p + 8) / 4
+(p + 8) * 2
+p / 2
+
 model = TimeAwareRegVAE(
     input_dim=p,
     latent_dim=latent_dim,
     n_timepoints=n_timepoints,
     n_measurements=n_measurements,
-    input_to_latent_dim=32,
-    transformer_dim_feedforward=32,
+    input_to_latent_dim=256,
+    transformer_dim_feedforward=1016,
+    nhead=4,
     time_emb_dim=8,
-    dropout_sigma=0.2,
-    beta_vae=1.0
+    dropout_sigma=0.0,
+    beta_vae=1.0,
+    reconstruction_weight=1.0,
+    prediction_weight=1.0
 ).to(device)
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
@@ -329,9 +348,12 @@ x_hat.shape
 
 # --- Time-Aware Prediction ---
 # Project latent features
-h = model.latent_proj(x_hat_flat)  # Shape: [batch_size*M, 32]
-h.shape
-h = h.unsqueeze(1).repeat(1, model.n_timepoints, 1)  # [batch_size*M, T, 32]
+# h = model.latent_proj(x_hat_flat)  # Shape: [batch_size*M, 32]
+# h.shape
+# h = h.unsqueeze(1).repeat(1, model.n_timepoints, 1)  # [batch_size*M, T, 32]
+# h.shape
+
+h = x_hat_flat.unsqueeze(1).repeat(1, model.n_timepoints, 1)  # [batch_size*M, T, 32]
 h.shape
 
 # Get time embeddings (for all timepoints)
@@ -357,12 +379,12 @@ y_hat_flat.shape
 y_hat = y_hat_flat.view(batch_size, max_meas, model.n_timepoints)
 y_hat.shape
 
-##########################################################3
+##########################################################
 
 
 # 5. Training Loop
-num_epochs = 1000
-c_annealer = utils.CyclicAnnealer(cycle_length=num_epochs / 2, min_beta=0.0, max_beta=1.0, mode='cosine')
+num_epochs = 100
+# c_annealer = utils.CyclicAnnealer(cycle_length=num_epochs / 2, min_beta=0.0, max_beta=1.0, mode='cosine')
 # plt.plot([c_annealer.get_beta(ii) for ii in range(1,num_epochs)])
 # plt.show()
 
@@ -383,7 +405,7 @@ model.load_state_dict(trainer.best_model.state_dict())
 # 6. Latent Space Extraction
 model.eval()
 with torch.no_grad():
-    mu, _ = model.encode(tensor_data_test[0].to(device))
+    mu = model(tensor_data_test[0].to(device))[2]
     Z_hat = mu.cpu().numpy()
 
 if latent_dim == k:
@@ -406,12 +428,12 @@ model.eval()
 with torch.no_grad():
     X_hat = model(tensor_data_test[0])[0].cpu().numpy()
 X_hat.shape
-np.corrcoef(data_test[0], X_hat, rowvar=False)
+np.corrcoef(data_test[0][:, 0, :], X_hat[:, 0, :], rowvar=False)
 
 # plot
-plt.scatter(X_hat[:, 0], data_test[0][:, 0])
+plt.scatter(X_hat[:, 0, 0], data_test[0][:, 0, 0])
 plt.show()
-plt.scatter(X_hat[:, 10], data_test[0][:, 10])
+plt.scatter(X_hat[:, 0, p-1], data_test[0][:, 0, p-1])
 plt.show()
 
 # LOSS components
@@ -448,8 +470,10 @@ x_train.requires_grad_(True)
 x_hat, y_hat, _, _ = model(x_train)
 
 t_point = 0
-y_hat[:, 0, t_point].sum().backward()  # Focus on t=2
-saliency = x_train.grad.abs().mean(dim=0)  # [input_dim]
+measurement = 0
+y_hat[:, measurement, t_point].sum().backward()  # Focus on t=2
+saliency = x_train.grad.abs().mean(dim=0)[measurement, :]  # [input_dim]
+saliency.shape
 
 # Plot top features
 top_k = 10
@@ -462,11 +486,12 @@ plt.show()
 # Outcome predictions
 # Features space reconstruction
 model.eval()
+
 with torch.no_grad():
     y_test_hat = model(tensor_data_test[0])[1].cpu().numpy()
 
 pearsonr(data_test[2], y_test_hat)[0]
-np.sqrt(np.mean((y_test_hat - data_test[2])**2))
+np.sqrt(np.mean((y_test_hat - data_test[2])**2, axis=0))
 
 plt.plot(data_test[2][0], label="true")
 plt.plot(y_test_hat[0], label="pred")
@@ -501,7 +526,7 @@ def predict(x):
 
 # ---------- reshape data to long format for SHAP -------
 test_size, max_meas, input_dim = data_train[0].shape
-x_flat = tensor_data_train[0][0:50].view(-1, input_dim)  # (batch_size * max_measurements, input_dim)
+x_flat = tensor_data_train[0][0:30].view(-1, input_dim)  # (batch_size * max_measurements, input_dim)
 x_flat = x_flat.detach().numpy()
 x_flat.shape
 predict(x_flat).shape
@@ -512,7 +537,7 @@ explainer = shap.KernelExplainer(predict, x_flat)  # Using 100 samples as backgr
 # model.eval()
 # explainer = shap.DeepExplainer((model, model.fc1), X_train_tensor)
 
-samples_to_explain = tensor_data_test[0][0:100]
+samples_to_explain = tensor_data_test[0][0:25]
 samples_to_explain = samples_to_explain.view(-1, input_dim)  # (batch_size * max_measurements, input_dim)
 samples_to_explain = samples_to_explain.detach().numpy()
 samples_to_explain.shape
@@ -535,9 +560,8 @@ shap.plots.beeswarm(shap.Explanation(
     max_display=6
 )
 
-np.argmax(np.abs(shap_values[:,:,time_point]).sum(axis=0))
+feature = np.argmax(np.abs(shap_values[:,:,time_point]).sum(axis=0))
 
-feature = 70
 fig = plt.figure()
 plt.violinplot(shap_values[:, feature, :])
 plt.xlabel("Time")
@@ -560,15 +584,6 @@ shap.force_plot(explainer.expected_value[time_point], shap_values[sample_ind, :,
     feature_names=[f'Feature {i}' for i in range(p)], matplotlib=True
 )
 
-# Takes into account features correlation
-import sage
-
-imputer = sage.MarginalImputer(predict, data_train[0][0:50, :])  # Background data
-estimator = sage.KernelEstimator(imputer, 'mse')
-sage_values = estimator(data_train[0], data_train[2].flatten())
-sage_values.plot(feature_names, max_features=20)
-plt.show()
-
 
 # Latent space visualisation
 model.eval()
@@ -580,6 +595,8 @@ with torch.no_grad():
         labels.append(y)
 latents = torch.cat(latents).numpy()
 labels = torch.cat(labels).numpy()
+latents.shape
+labels.shape
 
 plt.scatter(latents[:, 0], latents[:, 3], c=labels, alpha=0.9)
 plt.colorbar()
@@ -593,7 +610,7 @@ with torch.no_grad():
 
 # Visualize generated samples
 dim = 15
-plt.hist(generated[:, dim], label="gen")
-plt.hist(data_test[0][:, dim], label="real", alpha=0.5)
+plt.hist(generated[:, 0, dim], label="gen")
+plt.hist(data_test[0][:, 0, dim], label="real", alpha=0.5)
 plt.legend()
 plt.show()
