@@ -26,17 +26,21 @@ from vae_regression import training
 from model_utils import utils
 
 
+torch.get_num_threads()
+torch.set_num_threads(5)
+
 # generate data assuming an underlying latent space of dimension k
 k = 5
 n_train = 100
 n_test = 200
 n_val = 200
 n = n_train + n_val + n_test
-p = 500
+p = 600
 p1 = 30
 p0 = p - p1
-n_timepoints = 4
-n_measurements = 5
+n_timepoints = 5
+n_measurements = 4
+batch_size = 50
 
 # custom W
 np.random.seed(323425)
@@ -56,11 +60,11 @@ W[:, 0:p0] = 0
 
 beta = np.array([-1, 1, -1, 1, -1])
 beta = beta[..., None] * np.ones([k, n_timepoints])
-beta[0, 1:] = [-2., -2., -1.]
-beta[1, 1:] = [2., 3., 1.]
-beta[2, 1:] = [0, 0, 0]
+beta[0, 1:] = [-2., -2., -1., -1]
+beta[1, 1:] = [2., 3., 1., 1]
+beta[2, 1:] = [0, 0, 0, 0]
 
-beta_time = np.array([0, 1, 2, 0, -1])
+beta_time = np.array([0, 1, 2, 1, 0, -1])
 
 y, X, Z, beta = data_generation.multi_longitudinal_data_generation(
     n, k, p, n_timepoints, n_measurements,
@@ -101,9 +105,9 @@ tensor_data_test = data_split.get_test(X_tensor, y_tensor)
 tensor_data_val = data_split.get_val(X_tensor, y_tensor)
 
 # make tensor data loaders
-train_dataloader = utils.make_data_loader(*tensor_data_train, batch_size=32)
-test_dataloader = utils.make_data_loader(*tensor_data_test, batch_size=32)
-val_dataloader = utils.make_data_loader(*tensor_data_val, batch_size=32)
+train_dataloader = utils.make_data_loader(*tensor_data_train, batch_size=batch_size)
+test_dataloader = utils.make_data_loader(*tensor_data_test, batch_size=batch_size)
+val_dataloader = utils.make_data_loader(*tensor_data_val, batch_size=batch_size)
 
 next(iter(train_dataloader))[0].shape  # X
 next(iter(train_dataloader))[1].shape  # y
@@ -315,14 +319,14 @@ model = TimeAwareRegVAE(
     latent_dim=latent_dim,
     n_timepoints=n_timepoints,
     n_measurements=n_measurements,
-    input_to_latent_dim=256,
-    transformer_dim_feedforward=1016,
+    input_to_latent_dim=64,
+    transformer_dim_feedforward=608,
     nhead=4,
     time_emb_dim=8,
     dropout_sigma=0.0,
     beta_vae=1.0,
     reconstruction_weight=1.0,
-    prediction_weight=1.0
+    prediction_weight=2.0
 ).to(device)
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
@@ -383,7 +387,7 @@ y_hat.shape
 
 
 # 5. Training Loop
-num_epochs = 100
+num_epochs = 1000
 # c_annealer = utils.CyclicAnnealer(cycle_length=num_epochs / 2, min_beta=0.0, max_beta=1.0, mode='cosine')
 # plt.plot([c_annealer.get_beta(ii) for ii in range(1,num_epochs)])
 # plt.show()
@@ -395,7 +399,9 @@ trainer.training_loop(model, optimizer, num_epochs)
 plt.plot(trainer.losses["train"], label="train")
 plt.plot(trainer.losses["val"], label="val")
 plt.vlines(np.argmin(trainer.losses["val"]), 0, max(trainer.losses["val"]), color="red")
-plt.hlines(np.min(trainer.losses["val"]), 0, num_epochs, color="red", linestyles="--")
+plt.vlines(np.argmin(trainer.losses["train"]), 0, max(trainer.losses["train"]), color="blue")
+plt.hlines(np.min(trainer.losses["val"]), 0, len(trainer.losses["val"]), color="red", linestyles="--")
+plt.hlines(np.min(trainer.losses["train"]), 0, len(trainer.losses["val"]), color="blue", linestyles="--")
 plt.legend()
 plt.show()
 
@@ -498,6 +504,12 @@ plt.plot(y_test_hat[0], label="pred")
 plt.legend()
 plt.show()
 
+plt.plot(data_test[2][1, 0, :], label="true")
+plt.plot(y_test_hat[1, 0, :], label="pred")
+plt.legend()
+plt.show()
+
+
 # Coefficients
 def count_parameters(model):
     table = PrettyTable(["Modules", "Parameters"])
@@ -511,8 +523,84 @@ def count_parameters(model):
     print(table)
     print(f"Total Trainable Params: {total_params}")
     return total_params
-    
+
 count_parameters(model)
+
+
+# -------------- Features perturbation --------------
+y_obs = tensor_data_train[1][0:1]
+x_obs = tensor_data_train[0][0:1]
+with torch.no_grad():
+    x_hat, y_hat, mu, logvar = model(x_obs) # x_hat, y_hat, mu, logvar
+
+# Create figure
+fig = plt.figure(figsize=(10, 8))
+
+# Add subplots
+ax1 = fig.add_subplot(2, 2, 1)  # 2 rows, 2 columns, position 1
+ax1.plot(y_obs[0, 0, :].numpy(), label="Observed")
+ax1.plot(y_hat[0, 0, :].numpy(), label="Pred")
+ax1.legend()
+ax1.set_title('Rep 1')
+
+ax2 = fig.add_subplot(2, 2, 2)
+ax2.plot(y_obs[0, 1, :].numpy(), label="Observed")
+ax2.plot(y_hat[0, 1, :].numpy(), label="Pred")
+ax2.legend()
+ax2.set_title('Rep 2')
+
+ax3 = fig.add_subplot(2, 2, 3)
+ax3.plot(y_obs[0, 2, :].numpy(), label="Observed")
+ax3.plot(y_hat[0, 2, :].numpy(), label="Pred")
+ax3.legend()
+ax3.set_title('Rep 3')
+
+ax4 = fig.add_subplot(2, 2, 4)
+ax4.plot(y_obs[0, 3, :].numpy(), label="Observed")
+ax4.plot(y_hat[0, 3, :].numpy(), label="Pred")
+ax4.legend()
+ax4.set_title('Rep 4')
+
+plt.tight_layout()
+plt.show()
+
+# Perturbation
+y_obs = tensor_data_train[1][0:1].detach().numpy()
+x_obs = tensor_data_train[0][0:1].detach().numpy()
+feature_to_change = p-1
+with torch.no_grad():
+    pred = model(torch.tensor(x_obs)) # x_hat, y_hat, mu, logvar
+
+    x_pert_1 = np.copy(x_obs)
+    x_pert_1[:, :, feature_to_change] += 1
+    pred_1 = model(torch.tensor(x_pert_1)) # x_hat, y_hat, mu, logvar
+
+    x_pert_2 = np.copy(x_obs)
+    x_pert_2[:, :, feature_to_change] -= 1
+    pred_2 = model(torch.tensor(x_pert_2)) # x_hat, y_hat, mu, logvar
+
+
+# Create figure
+fig = plt.figure(figsize=(10, 8))
+measurement = 1
+# Add subplots
+ax1 = fig.add_subplot(1, 2, 1) 
+ax1.plot(y_obs[0, measurement, :], label="Observed")
+ax1.plot(pred[1][0, measurement, :].numpy(), label="Pred")
+ax1.plot(pred_1[1][0, measurement, :].numpy(), label="Perturbed")
+ax1.legend()
+ax1.set_title('Pert 1')
+
+ax2 = fig.add_subplot(1, 2, 2) 
+ax2.plot(y_obs[0, measurement, :], label="Observed")
+ax2.plot(pred[1][0, measurement, :].numpy(), label="Pred")
+ax2.plot(pred_2[1][0, measurement, :].numpy(), label="Perturbed")
+ax2.legend()
+ax2.set_title('Pert 2')
+
+plt.tight_layout()
+plt.show()
+
 
 # --------------- SHAP explanations ---------------
 model.eval()
@@ -526,7 +614,7 @@ def predict(x):
 
 # ---------- reshape data to long format for SHAP -------
 test_size, max_meas, input_dim = data_train[0].shape
-x_flat = tensor_data_train[0][0:30].view(-1, input_dim)  # (batch_size * max_measurements, input_dim)
+x_flat = tensor_data_train[0][0:10].view(-1, input_dim)  # (batch_size * max_measurements, input_dim)
 x_flat = x_flat.detach().numpy()
 x_flat.shape
 predict(x_flat).shape
@@ -535,7 +623,8 @@ predict(x_flat).shape
 explainer = shap.KernelExplainer(predict, x_flat)  # Using 100 samples as background
 # Deep explainer for NN
 # model.eval()
-# explainer = shap.DeepExplainer((model, model.fc1), X_train_tensor)
+# torch.set_grad_enabled(True)
+# explainer = shap.DeepExplainer(predict, x_flat)
 
 samples_to_explain = tensor_data_test[0][0:25]
 samples_to_explain = samples_to_explain.view(-1, input_dim)  # (batch_size * max_measurements, input_dim)
@@ -561,6 +650,7 @@ shap.plots.beeswarm(shap.Explanation(
 )
 
 feature = np.argmax(np.abs(shap_values[:,:,time_point]).sum(axis=0))
+feature
 
 fig = plt.figure()
 plt.violinplot(shap_values[:, feature, :])
