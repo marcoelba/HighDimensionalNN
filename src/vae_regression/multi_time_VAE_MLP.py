@@ -6,6 +6,8 @@ from torch.utils.data import DataLoader, TensorDataset
 import torch.nn.functional as F
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
 
+import onnx
+
 import numpy as np
 from scipy.linalg import toeplitz
 from scipy.stats import pearsonr
@@ -27,7 +29,7 @@ from model_utils import utils
 
 
 torch.get_num_threads()
-torch.set_num_threads(5)
+torch.set_num_threads(8)
 
 # generate data assuming an underlying latent space of dimension k
 k = 5
@@ -224,7 +226,7 @@ class TimeAwareRegVAE(nn.Module):
         # Project latent features
         # h = self.latent_proj(x_hat_flat)  # Shape: [batch_size*M, 32]
         # h = h.unsqueeze(1).repeat(1, self.n_timepoints, 1)  # [batch_size*M, T, 32]
-        h = x_hat_flat.unsqueeze(1).repeat(1, self.n_timepoints, 1)  # [batch_size*M, T, 32]
+        h = x_hat_flat.unsqueeze(1).repeat(1, self.n_timepoints, 1)  # [batch_size*M, T, input_dim]
 
         # Get time embeddings (for all timepoints)
         time_ids = torch.arange(self.n_timepoints, device=x.device)  # [0, 1, ..., T-1]
@@ -232,7 +234,7 @@ class TimeAwareRegVAE(nn.Module):
         time_embs = time_embs.unsqueeze(0).repeat(h.shape[0], 1, 1)  # [bs*M, T, time_emb_dim]
 
         # Combine latent features and time embeddings
-        h_time = torch.cat([h, time_embs], dim=-1)  # [batch_size*M, T, 32 + time_emb_dim]
+        h_time = torch.cat([h, time_embs], dim=-1)  # [batch_size*M, T, input_dim + time_emb_dim]
 
         # Process temporally
         # Transformer expects [T, batch_size, features]
@@ -330,7 +332,7 @@ model = TimeAwareRegVAE(
 ).to(device)
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
-
+print(model)
 
 #########################################################
 x = next(iter(train_dataloader))[0]
@@ -387,7 +389,7 @@ y_hat.shape
 
 
 # 5. Training Loop
-num_epochs = 1000
+num_epochs = 200
 # c_annealer = utils.CyclicAnnealer(cycle_length=num_epochs / 2, min_beta=0.0, max_beta=1.0, mode='cosine')
 # plt.plot([c_annealer.get_beta(ii) for ii in range(1,num_epochs)])
 # plt.show()
@@ -704,3 +706,14 @@ plt.hist(generated[:, 0, dim], label="gen")
 plt.hist(data_test[0][:, 0, dim], label="real", alpha=0.5)
 plt.legend()
 plt.show()
+
+
+# ---------------------------------------------------
+# ---------------- model graph ----------------------
+# ---------------------------------------------------
+torch.onnx.export(model, tensor_data_test[0][0:1], 'multi_time_vae_mlp.onnx', input_names=["Covariates"], output_names=["Predicted_y"])
+pred = model(tensor_data_test[0][0:2])
+pred[0].shape
+pred[1].shape
+pred[2].shape
+pred[3].shape

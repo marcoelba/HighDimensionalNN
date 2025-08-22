@@ -16,6 +16,8 @@ from prettytable import PrettyTable
 import matplotlib.pyplot as plt
 import shap
 
+import onnx
+
 import os
 os.chdir("./src")
 
@@ -171,7 +173,7 @@ model = RegVAE(input_dim=p, latent_dim=latent_dim, dropout_sigma=0.2, beta_vae=1
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
 # 5. Training Loop
-num_epochs = 500
+num_epochs = 200
 c_annealer = utils.CyclicAnnealer(cycle_length=num_epochs / 2, min_beta=0.0, max_beta=1.0, mode='cosine')
 # plt.plot([c_annealer.get_beta(ii) for ii in range(1,num_epochs)])
 # plt.show()
@@ -383,18 +385,5 @@ plt.legend()
 plt.show()
 
 
-# ONLY linear model
-from sklearn.linear_model import LassoCV
-
-lasso = LassoCV(cv=5, random_state=0).fit(data_train[0], data_train[2].ravel())
-lasso.score(data_train[0], data_train[2].ravel())
-lasso.score(data_test[0], data_test[2].ravel())
-
-plt.plot(lasso.coef_, color='green', marker='o', linestyle='')
-plt.hlines(0, 0, p)
-plt.show()
-
-lasso_pred = lasso.predict(data_test[0])
-np.corrcoef(data_test[2].ravel(), lasso_pred, rowvar=False)**2
-
-np.sqrt(np.mean((lasso_pred - data_test[2].ravel())**2))
+# model visualisation
+torch.onnx.export(model, tensor_data_test[0], 'vae_mlp.onnx', input_names=["Covariates"], output_names=["Predicted_y"])
