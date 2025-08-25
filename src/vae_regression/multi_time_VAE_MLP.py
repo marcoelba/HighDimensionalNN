@@ -1,4 +1,4 @@
-# latent space recovery
+# Multi measurements longitudinal vae-mlp
 import torch
 import torch.nn as nn
 import torch.optim as optim
