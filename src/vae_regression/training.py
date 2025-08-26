@@ -36,7 +36,7 @@ class Training:
             for batch_data in self.train_dataloader:
                 optimizer.zero_grad()
                 
-                model_output = model(batch_data[0])
+                model_output = model(batch_data)
                 loss = model.loss(model_output, batch_data[0], batch_data[1])
                 
                 loss.backward()
@@ -51,7 +51,7 @@ class Training:
                 with torch.no_grad():
                     for batch_data in self.val_dataloader:
                         
-                        model_output = model(batch_data[0])
+                        model_output = model(batch_data)
                         loss = model.loss(model_output, batch_data[0], batch_data[1])
 
                         val_loss += loss.item()

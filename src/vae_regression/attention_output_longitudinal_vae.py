@@ -17,6 +17,7 @@ os.chdir("./src")
 from vae_regression import data_generation
 from vae_regression import training
 from vae_regression.models.multi_head_attention_layer import MultiHeadSelfAttentionWithWeights, TransformerEncoderLayerWithWeights
+from vae_regression.models.sinusoidal_position_encoder import SinusoidalPositionalEncoding
 
 from model_utils import utils
 
@@ -43,8 +44,8 @@ W = np.random.choice(
     [-1.5, -1, -0.8, -0.5, 1.5, 1, 0.8, 0.5],
     size=(k, p)
 )
-first_half = range(0, int(p/2))
-second_half = range(int(p/2), p)
+first_half = range(0, int(p / 2))
+second_half = range(int(p / 2), p)
 # # block structure
 # W[0, first_half] = 0.0
 # W[1, first_half] = 0.0
@@ -76,7 +77,6 @@ plt.show()
 # one patient
 plt.plot(y[0, :, :].transpose())
 plt.show()
-
 
 # get tensors
 X_tensor = torch.FloatTensor(X).to(torch.device("cpu"))
@@ -147,10 +147,11 @@ class TimeAttentionVAE(nn.Module):
         n_timepoints,     # Number of timepoints (T)
         n_measurements,
         vae_latent_dim,         # Dimension of latent space Z in VAE
-        vae_input_to_latent_dim=32,
-        transformer_dim_feedforward=32,
+        vae_input_to_latent_dim,
+        max_len_position_enc,
+        transformer_input_dim,
+        transformer_dim_feedforward,
         nheads=4,
-        time_emb_dim=8,     # Dimension of time embeddings
         dropout=0.0,
         dropout_attention=0.0,
         beta_vae=1.0,
@@ -165,7 +166,7 @@ class TimeAttentionVAE(nn.Module):
         self.n_timepoints = n_timepoints
         self.n_measurements = n_measurements
         self.nheads = nheads
-        self.transformer_input_dim = input_dim + time_emb_dim
+        self.transformer_input_dim = transformer_input_dim
 
         # Dropout
         self.dropout = nn.Dropout(dropout)
@@ -185,10 +186,20 @@ class TimeAttentionVAE(nn.Module):
             nn.Linear(vae_input_to_latent_dim, input_dim)
         )
 
-        # ------------- Time Embeddings -------------
-        self.time_embedding = nn.Embedding(n_timepoints, time_emb_dim)
+        # ---- non-linear projection of [X,lag_y] to common input dimension -----
+        self.projection_to_transformer = nn.Sequential(
+            nn.Linear(input_dim + 1, transformer_input_dim),
+            nn.GELU(),
+            nn.Dropout(dropout)
+        )
 
-        # --- Time-Aware transformer ---
+        # ---------------- Time Embeddings ----------------
+        self.pos_encoder = SinusoidalPositionalEncoding(
+            transformer_input_dim,
+            max_len_position_enc
+        )
+
+        # -------------- Time-Aware transformer -------------
         self.transformer_module = TransformerEncoderLayerWithWeights(
             input_dim=self.transformer_input_dim,
             nheads=self.nheads,
@@ -220,31 +231,38 @@ class TimeAttentionVAE(nn.Module):
     def generate_measurement_mask(self, batch_size, M):
         return torch.ones([batch_size, M])
 
-    def forward(self, x):
-        
+    def forward(self, batch):
+        x = batch[0]
+        # make lagged y
+        past_y = torch.zeros(batch[1].shape)
+        past_y = past_y[..., None]
+        past_y[:, :, 1:, 0] = batch[1][:, :, :-1]  # Fill positions t>=2 with y values from t-1
+        past_y_flat = past_y.view(-1, self.n_timepoints, 1)
+
         batch_size, max_meas, input_dim = x.shape
         # Generate causal mask
         causal_mask = self.generate_causal_mask(self.n_timepoints).to(x.device)
 
-        # ------- VAE -------
+        # ---------------------------- VAE ----------------------------
         x_flat = x.view(-1, input_dim)  # (batch_size * max_measurements, input_dim)
         mu, logvar = self.encode(x_flat)
         z_hat = self.reparameterize(mu, logvar)
         x_hat_flat = self.decode(z_hat)  # Shape: [batch_size, input_dim]
         x_hat = x_hat_flat.view(batch_size, max_meas, input_dim)  # Reshape back
 
-        # --- Time-Aware Prediction ---
+        # --------------------- Expand over time dimension ---------------------
         h = x_hat_flat.unsqueeze(1).repeat(1, self.n_timepoints, 1)  # [batch_size*M, T, input_dim]
 
-        # ------- time embeddings -------
-        time_ids = torch.arange(self.n_timepoints, device=x.device)  # [0, 1, ..., T-1]
-        time_embs = self.time_embedding(time_ids)  # [T, time_emb_dim]
-        time_embs = time_embs.unsqueeze(0).repeat(h.shape[0], 1, 1)  # [bs*M, T, time_emb_dim]
+        # --------------------- Add the lagged outcome y ----------------------
+        h_with_lag_y = torch.cat([h, past_y_flat], dim=-1)
 
-        # Combine latent features and time embeddings
-        h_time = torch.cat([h, time_embs], dim=-1)  # [batch_size*M, T, input_dim + time_emb_dim]
+        # --------------- Projection to transformer input dimension -----------
+        h_in = self.projection_to_transformer(h_with_lag_y)
+        
+        # --------------------- Time positional embedding ---------------------
+        h_time = self.pos_encoder(h_in)
 
-        # --------- Transformer ---------
+        # ----------------------- Transformer ------------------------------
         # This custom Transformer module expects input with shape: [batch_size, seq_len, input_dim]
         h_out = self.transformer_module(h_time, attn_mask=causal_mask)
 
@@ -264,7 +282,7 @@ class TimeAttentionVAE(nn.Module):
 
         return self.reconstruction_weight * BCE + self.beta * KLD + self.prediction_weight * PredMSE
     
-    def get_attention_weights(self, x):
+    def get_attention_weights(self, batch):
         """
         This method allows to extract the attention weights from the layer.
         attn_weights shape: [batch_size, nhead, seq_len, seq_len]
@@ -280,27 +298,35 @@ class TimeAttentionVAE(nn.Module):
             attn_weights: Attention weights tensor [batch_size, nhead, seq_len, seq_len]
         """
         with torch.no_grad():
+            x = batch[0]
+            # make lagged y
+            past_y = torch.zeros(batch[1].shape)
+            past_y = past_y[..., None]
+            past_y[:, :, 1:, 0] = batch[1][:, :, :-1]  # Fill positions t>=2 with y values from t-1
+            past_y_flat = past_y.view(-1, self.n_timepoints, 1)
+
             batch_size, max_meas, input_dim = x.shape
             # Generate causal mask
             causal_mask = self.generate_causal_mask(self.n_timepoints).to(x.device)
 
-            # ------- VAE -------
+            # ---------------------------- VAE ----------------------------
             x_flat = x.view(-1, input_dim)  # (batch_size * max_measurements, input_dim)
             mu, logvar = self.encode(x_flat)
             z_hat = self.reparameterize(mu, logvar)
             x_hat_flat = self.decode(z_hat)  # Shape: [batch_size, input_dim]
             x_hat = x_hat_flat.view(batch_size, max_meas, input_dim)  # Reshape back
 
-            # --- Time-Aware Prediction ---
+            # --------------------- Expand over time dimension ---------------------
             h = x_hat_flat.unsqueeze(1).repeat(1, self.n_timepoints, 1)  # [batch_size*M, T, input_dim]
 
-            # ------- time embeddings -------
-            time_ids = torch.arange(self.n_timepoints, device=x.device)  # [0, 1, ..., T-1]
-            time_embs = self.time_embedding(time_ids)  # [T, time_emb_dim]
-            time_embs = time_embs.unsqueeze(0).repeat(h.shape[0], 1, 1)  # [bs*M, T, time_emb_dim]
+            # --------------------- Add the lagged outcome y ----------------------
+            h_with_lag_y = torch.cat([h, past_y_flat], dim=-1)
 
-            # Combine latent features and time embeddings
-            h_time = torch.cat([h, time_embs], dim=-1)  # [batch_size*M, T, input_dim + time_emb_dim]
+            # --------------- Projection to transformer input dimension -----------
+            h_in = self.projection_to_transformer(h_with_lag_y)
+            
+            # --------------------- Time positional embedding ---------------------
+            h_time = self.pos_encoder(h_in)
 
             attn_weights = self.transformer_module.cross_attn.get_attention_weights(
                 h_time,
@@ -328,8 +354,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 latent_dim = k * 2
 # for the number of heads
-(p + 8) / 4
-(p + 8) * 2
+transformer_input_dim = 256
+transformer_dim_feedforward = transformer_input_dim * 4
 
 model = TimeAttentionVAE(
     input_dim=p,
@@ -337,9 +363,10 @@ model = TimeAttentionVAE(
     n_measurements=n_measurements,
     vae_latent_dim=latent_dim,
     vae_input_to_latent_dim=64,
-    transformer_dim_feedforward=1216,
+    max_len_position_enc=10,
+    transformer_input_dim=transformer_input_dim,
+    transformer_dim_feedforward=transformer_dim_feedforward,
     nheads=4,
-    time_emb_dim=8,
     dropout=0.1,
     dropout_attention=0.1,
     prediction_weight=1.0
@@ -351,6 +378,11 @@ print(model)
 #########################################################
 x = next(iter(train_dataloader))[0]
 batch_size, max_meas, input_dim = x.shape
+
+past_y = torch.zeros(next(iter(train_dataloader))[1].shape)
+past_y = past_y[..., None]
+past_y[:, :, 1:, 0] = next(iter(train_dataloader))[1][:, :, :-1]  # Fill positions t>=2 with y values from t-1
+
 # Generate causal mask
 causal_mask = model.generate_causal_mask(model.n_timepoints).to(x.device)
 
@@ -366,14 +398,19 @@ x_hat.shape
 h = x_hat_flat.unsqueeze(1).repeat(1, model.n_timepoints, 1)  # [batch_size*M, T, input_dim]
 h.shape
 
-# ------- time embeddings -------
-time_ids = torch.arange(model.n_timepoints, device=x.device)  # [0, 1, ..., T-1]
-time_embs = model.time_embedding(time_ids)  # [T, time_emb_dim]
-time_embs = time_embs.unsqueeze(0).repeat(h.shape[0], 1, 1)  # [bs*M, T, time_emb_dim]
-time_embs.shape
+# --------------------- Add the lagged outcome y ----------------------
+past_y.shape
+past_y_flat = past_y.view(-1, model.n_timepoints, 1)
+past_y_flat.shape
+h_with_lag_y = torch.cat([h, past_y_flat], dim=-1)
+h_with_lag_y.shape
 
-# Combine latent features and time embeddings
-h_time = torch.cat([h, time_embs], dim=-1)  # [batch_size*M, T, input_dim + time_emb_dim]
+# --------------- Projection to transformer input dimension -----------
+h_in = model.projection_to_transformer(h_with_lag_y)
+h_in.shape
+
+# --------------------- Time positional embedding ---------------------
+h_time = model.pos_encoder(h_in)
 h_time.shape
 
 # --------- Transformer ---------
@@ -384,8 +421,6 @@ h_out.shape
 attn_weights = model.transformer_module.cross_attn.get_attention_weights(h_time, h_time, attn_mask=causal_mask)
 attn_weights.shape
 model.get_attention_weights(x)
-
-# h_out = h_out.transpose(0, 1)    # [batch_size*M, T, ...]
 
 # Predict outcomes
 y_hat_flat = model.fc_out(model.dropout(h_out)).squeeze(-1)  # [batch_size*M, T]
@@ -418,9 +453,9 @@ trainer.best_val_loss / len(val_dataloader.dataset)
 model.load_state_dict(trainer.best_model.state_dict())
 
 # check attention weights
-attn_weights = model.get_attention_weights(tensor_data_train[0])
+attn_weights = model.get_attention_weights(data_train)
 attn_weights.shape
-plot_attention_weights(attn_weights, observation=0, layer_name="Attention")
+plot_attention_weights(attn_weights, observation=10, layer_name="Attention")
 
 # 6. Latent Space Extraction
 model.eval()
@@ -448,7 +483,7 @@ plt.show()
 
 # LOSS components
 with torch.no_grad():
-    test_pred = model(tensor_data_test[0])
+    test_pred = model(tensor_data_test)
 loss_x, loss_kl, loss_y = loss_components(
     tensor_data_test[0], tensor_data_test[1],
     x_hat=test_pred[0], y_hat=test_pred[1], mu=test_pred[2], logvar=test_pred[3]
@@ -475,9 +510,9 @@ plt.show()
 
 # Saliency map for feature importance
 # weights from input to latent
-x_train = tensor_data_train[0]
+x_train = tensor_data_train
 x_train.requires_grad_(True)
-x_hat, y_hat, _, _ = model(x_train)
+x_hat, y_hat, _, _ = model(tensor_data_train)
 
 t_point = 0
 measurement = 0
