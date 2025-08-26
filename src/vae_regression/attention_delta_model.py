@@ -1,4 +1,4 @@
-# Multi measurements longitudinal vae-mlp
+# Delta-learning model
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -140,17 +140,11 @@ def plot_attention_weights(attn_weights, observation, layer_name="Attention"):
 
 
 # VAE + Explicit multi-head Attention layer
-class TimeAttentionVAE(nn.Module):
-    """
-        Define a NN model for longitudinal data and repeated measurements.
-        Uses VAE and Attention layers.
-        Takes in input a set of features measuted at baseline and the known outcome also measured at baseline.
-        Predicts T time points in the future, i.e. the trajectory of the outcome of interest.
-    """
+class DeltaTimeAttentionVAE(nn.Module):
     def __init__(
         self,
         input_dim,          # Dimension of fixed input X (e.g., number of genes)
-        n_timepoints,     # Number of timepoints (T)
+        n_timepoints,     # Number of timepoints to predict in the future
         n_measurements,
         vae_latent_dim,         # Dimension of latent space Z in VAE
         vae_input_to_latent_dim,
@@ -164,7 +158,7 @@ class TimeAttentionVAE(nn.Module):
         prediction_weight=1.0,
         reconstruction_weight=1.0
     ):
-        super(TimeAttentionVAE, self).__init__()
+        super(DeltaTimeAttentionVAE, self).__init__()
         
         self.beta = beta_vae
         self.reconstruction_weight = reconstruction_weight
@@ -192,8 +186,8 @@ class TimeAttentionVAE(nn.Module):
             nn.Linear(vae_input_to_latent_dim, input_dim)
         )
 
-        # ---- non-linear projection of [X,lag_y] to common input dimension -----
-        # X already extended to the time dimension
+        # ---- non-linear projection of [X, y_t0] to common input dimension -----
+        # Adding +1 to input_dim to account for the baseline value of y: y_t0
         self.projection_to_transformer = nn.Sequential(
             nn.Linear(input_dim + 1, transformer_input_dim),
             nn.GELU(),
@@ -239,14 +233,14 @@ class TimeAttentionVAE(nn.Module):
         return torch.ones([batch_size, M])
 
     def forward(self, batch):
+        # x has shape (n x M x p)
         x = batch[0]
-        # make lagged y
-        past_y = torch.zeros(batch[1].shape)
-        past_y = past_y[..., None]
-        past_y[:, :, 1:, 0] = batch[1][:, :, :-1]  # Fill positions t>=2 with y values from t-1
-        past_y_flat = past_y.view(-1, self.n_timepoints, 1)
-
         batch_size, max_meas, input_dim = x.shape
+
+        # y has shape (n x M x T), so take only the first time point
+        y0 = batch[1][..., 0:1]
+        y0_flat = y0.view(-1, 1)
+
         # Generate causal mask
         causal_mask = self.generate_causal_mask(self.n_timepoints).to(x.device)
 
@@ -257,14 +251,14 @@ class TimeAttentionVAE(nn.Module):
         x_hat_flat = self.decode(z_hat)  # Shape: [batch_size, input_dim]
         x_hat = x_hat_flat.view(batch_size, max_meas, input_dim)  # Reshape back
 
-        # --------------------- Expand over time dimension ---------------------
-        h = x_hat_flat.unsqueeze(1).repeat(1, self.n_timepoints, 1)  # [batch_size*M, T, input_dim]
-
         # --------------------- Add the lagged outcome y ----------------------
-        h_with_lag_y = torch.cat([h, past_y_flat], dim=-1)
+        h = torch.cat([x_hat_flat, y0_flat], dim=-1)
+
+        # --------------------- Expand over time dimension ---------------------
+        h_exp = h.unsqueeze(1).repeat(1, self.n_timepoints, 1)  # [batch_size*M, T, input_dim]
 
         # --------------- Projection to transformer input dimension -----------
-        h_in = self.projection_to_transformer(h_with_lag_y)
+        h_in = self.projection_to_transformer(h_exp)
         
         # --------------------- Time positional embedding ---------------------
         h_time = self.pos_encoder(h_in)
@@ -280,12 +274,14 @@ class TimeAttentionVAE(nn.Module):
         return x_hat, y_hat, mu, logvar
 
     def loss(self, m_out, x, y):
+        # here need to consider only y FROM time 1, no baseline
+        y_t = y[..., 1:]
         # Reconstruction loss (MSE)
         BCE = nn.functional.mse_loss(m_out[0], x, reduction='sum')
         # KL divergence
         KLD = -0.5 * torch.sum(1 + m_out[3] - m_out[2].pow(2) - m_out[3].exp())
         # label prediction loss
-        PredMSE = nn.functional.mse_loss(m_out[1], y, reduction='sum')
+        PredMSE = nn.functional.mse_loss(m_out[1], y_t, reduction='sum')
 
         return self.reconstruction_weight * BCE + self.beta * KLD + self.prediction_weight * PredMSE
     
@@ -305,14 +301,14 @@ class TimeAttentionVAE(nn.Module):
             attn_weights: Attention weights tensor [batch_size, nhead, seq_len, seq_len]
         """
         with torch.no_grad():
+            # x has shape (n x M x p)
             x = batch[0]
-            # make lagged y
-            past_y = torch.zeros(batch[1].shape)
-            past_y = past_y[..., None]
-            past_y[:, :, 1:, 0] = batch[1][:, :, :-1]  # Fill positions t>=2 with y values from t-1
-            past_y_flat = past_y.view(-1, self.n_timepoints, 1)
-
             batch_size, max_meas, input_dim = x.shape
+
+            # y has shape (n x M x T), so take only the first time point
+            y0 = batch[1][..., 0:1]
+            y0_flat = y0.view(-1, 1)
+
             # Generate causal mask
             causal_mask = self.generate_causal_mask(self.n_timepoints).to(x.device)
 
@@ -323,14 +319,14 @@ class TimeAttentionVAE(nn.Module):
             x_hat_flat = self.decode(z_hat)  # Shape: [batch_size, input_dim]
             x_hat = x_hat_flat.view(batch_size, max_meas, input_dim)  # Reshape back
 
-            # --------------------- Expand over time dimension ---------------------
-            h = x_hat_flat.unsqueeze(1).repeat(1, self.n_timepoints, 1)  # [batch_size*M, T, input_dim]
-
             # --------------------- Add the lagged outcome y ----------------------
-            h_with_lag_y = torch.cat([h, past_y_flat], dim=-1)
+            h = torch.cat([x_hat_flat, y0_flat], dim=-1)
+
+            # --------------------- Expand over time dimension ---------------------
+            h_exp = h.unsqueeze(1).repeat(1, self.n_timepoints, 1)  # [batch_size*M, T, input_dim]
 
             # --------------- Projection to transformer input dimension -----------
-            h_in = self.projection_to_transformer(h_with_lag_y)
+            h_in = self.projection_to_transformer(h_exp)
             
             # --------------------- Time positional embedding ---------------------
             h_time = self.pos_encoder(h_in)
@@ -364,9 +360,9 @@ latent_dim = k * 2
 transformer_input_dim = 256
 transformer_dim_feedforward = transformer_input_dim * 4
 
-model = TimeAttentionVAE(
+model = DeltaTimeAttentionVAE(
     input_dim=p,
-    n_timepoints=n_timepoints,
+    n_timepoints=n_timepoints-1,
     n_measurements=n_measurements,
     vae_latent_dim=latent_dim,
     vae_input_to_latent_dim=64,
@@ -383,12 +379,15 @@ optimizer = optim.Adam(model.parameters(), lr=1e-3)
 print(model)
 
 #########################################################
+# x has shape (n x M x p)
 x = next(iter(train_dataloader))[0]
 batch_size, max_meas, input_dim = x.shape
 
-past_y = torch.zeros(next(iter(train_dataloader))[1].shape)
-past_y = past_y[..., None]
-past_y[:, :, 1:, 0] = next(iter(train_dataloader))[1][:, :, :-1]  # Fill positions t>=2 with y values from t-1
+# y has shape (n x M x T), so take only the first time point
+y0 = next(iter(train_dataloader))[1][..., 0:1]
+y0.shape
+y0_flat = y0.view(-1, 1) 
+y0_flat.shape
 
 # Generate causal mask
 causal_mask = model.generate_causal_mask(model.n_timepoints).to(x.device)
@@ -400,25 +399,22 @@ z_hat = model.reparameterize(mu, logvar)
 x_hat_flat = model.decode(z_hat)  # Shape: [batch_size, input_dim]
 x_hat = x_hat_flat.view(batch_size, max_meas, input_dim)  # Reshape back
 x_hat.shape
-
-# --- Time-Aware Prediction ---
-h = x_hat_flat.unsqueeze(1).repeat(1, model.n_timepoints, 1)  # [batch_size*M, T, input_dim]
-h.shape
+x_hat_flat.shape
 
 # --------------------- Add the lagged outcome y ----------------------
-past_y.shape
-past_y_flat = past_y.view(-1, model.n_timepoints, 1)
-past_y_flat.shape
-h_with_lag_y = torch.cat([h, past_y_flat], dim=-1)
-h_with_lag_y.shape
+h = torch.cat([x_hat_flat, y0_flat], dim=-1)
+h.shape
+
+# --------------------- Expand over time dimension ---------------------
+h_exp = h.unsqueeze(1).repeat(1, model.n_timepoints, 1)  # [batch_size*M, T, input_dim]
+h_exp.shape
 
 # --------------- Projection to transformer input dimension -----------
-h_in = model.projection_to_transformer(h_with_lag_y)
+h_in = model.projection_to_transformer(h_exp)
 h_in.shape
 
 # --------------------- Time positional embedding ---------------------
 h_time = model.pos_encoder(h_in)
-h_time.shape
 
 # --------- Transformer ---------
 # This custom Transformer module expects input with shape: [batch_size, seq_len, input_dim]
@@ -427,7 +423,7 @@ h_out.shape
 # check attn weights
 attn_weights = model.transformer_module.cross_attn.get_attention_weights(h_time, h_time, attn_mask=causal_mask)
 attn_weights.shape
-model.get_attention_weights(x)
+model.get_attention_weights(data_train)
 
 # Predict outcomes
 y_hat_flat = model.fc_out(model.dropout(h_out)).squeeze(-1)  # [batch_size*M, T]
@@ -469,11 +465,11 @@ model.eval()
 with torch.no_grad():
     mu = model(tensor_data_test)[2]
     Z_hat = mu.cpu().numpy()
-Z_hat.shape
 
 plt.imshow(np.corrcoef(Z_hat, rowvar=False), cmap='jet', interpolation=None)
 plt.colorbar()
 plt.show()
+
 
 # Features space reconstruction
 model.eval()
@@ -552,24 +548,3 @@ def count_parameters(model):
     return total_params
 
 count_parameters(model)
-
-# Outcome predictions
-# Features space reconstruction
-model.eval()
-with torch.no_grad():
-    y_test_hat = model(tensor_data_test)[1].cpu().numpy()
-
-pearsonr(data_test[2], y_test_hat)[0]
-np.sqrt(np.mean((y_test_hat - data_test[2])**2, axis=0))
-
-# Get colors from Pastel1 colormap
-colors = plt.cm.Pastel1.colors
-
-observation = 0
-# Create a simple plot using these colors
-fig, ax = plt.subplots(figsize=(8, 6))
-for i in range(data_test[2][observation].shape[0]):
-    ax.plot(data_test[2][observation][i], label="true", color=colors[i], linewidth=2)
-    ax.plot(y_test_hat[observation][i], label="pred", color=colors[i], linewidth=2, linestyle="dashed")
-ax.legend()
-plt.show()
