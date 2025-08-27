@@ -37,7 +37,7 @@ class Training:
                 optimizer.zero_grad()
                 
                 model_output = model(batch_data)
-                loss = model.loss(model_output, batch_data[0], batch_data[1])
+                loss = model.loss(model_output, batch_data)
                 
                 loss.backward()
                 train_loss += loss.item()
@@ -52,7 +52,7 @@ class Training:
                     for batch_data in self.val_dataloader:
                         
                         model_output = model(batch_data)
-                        loss = model.loss(model_output, batch_data[0], batch_data[1])
+                        loss = model.loss(model_output, batch_data)
 
                         val_loss += loss.item()
                 self.losses["val"].append(val_loss / self.len_val)

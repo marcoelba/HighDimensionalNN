@@ -20,6 +20,7 @@ from vae_regression.models.multi_head_attention_layer import MultiHeadSelfAttent
 from vae_regression.models.sinusoidal_position_encoder import SinusoidalPositionalEncoding
 
 from model_utils import utils
+from model_utils import plots
 
 
 torch.get_num_threads()
@@ -78,10 +79,19 @@ plt.show()
 plt.plot(y[0, :, :].transpose())
 plt.show()
 
+# y0 (y at baseline) is actually an additional feature, because it is measured before any intervention
+y.shape
+y_baseline = y[:, :, 0:1]
+y_baseline.shape
+# the actual target is then y from t=1
+y_target = y[:, :, 1:]
+y_target.shape
+
 # get tensors
 X_tensor = torch.FloatTensor(X).to(torch.device("cpu"))
 Z_tensor = torch.FloatTensor(Z).to(torch.device("cpu"))
-y_tensor = torch.FloatTensor(y).to(torch.device("cpu"))
+y_target_tensor = torch.FloatTensor(y_target).to(torch.device("cpu"))
+y_baseline_tensor = torch.FloatTensor(y_baseline).to(torch.device("cpu"))
 
 # split data
 data_split = utils.DataSplit(X.shape[0], test_size=n_test, val_size=n_val)
@@ -90,14 +100,13 @@ print("train: ", len(data_split.train_index),
     "test: ", len(data_split.test_index)
 )
 
+data_train = data_split.get_train(X, y_baseline, Z, y_target)
+data_test = data_split.get_test(X, y_baseline, Z, y_target)
+data_val = data_split.get_val(X, y_baseline, Z, y_target)
 
-data_train = data_split.get_train(X, Z, y)
-data_test = data_split.get_test(X, Z, y)
-data_val = data_split.get_val(X, Z, y)
-
-tensor_data_train = data_split.get_train(X_tensor, y_tensor)
-tensor_data_test = data_split.get_test(X_tensor, y_tensor)
-tensor_data_val = data_split.get_val(X_tensor, y_tensor)
+tensor_data_train = data_split.get_train(X_tensor, y_baseline_tensor, y_target_tensor)
+tensor_data_test = data_split.get_test(X_tensor, y_baseline_tensor, y_target_tensor)
+tensor_data_val = data_split.get_val(X_tensor, y_baseline_tensor, y_target_tensor)
 
 # make tensor data loaders
 train_dataloader = utils.make_data_loader(*tensor_data_train, batch_size=batch_size)
@@ -105,38 +114,8 @@ test_dataloader = utils.make_data_loader(*tensor_data_test, batch_size=batch_siz
 val_dataloader = utils.make_data_loader(*tensor_data_val, batch_size=batch_size)
 
 next(iter(train_dataloader))[0].shape  # X
-next(iter(train_dataloader))[1].shape  # y
-
-
-def plot_attention_weights(attn_weights, observation, layer_name="Attention"):
-    """
-    Plot attention weights for all heads in a grid.
-    
-    Args:
-        attn_weights: Tensor of shape [batch_size, nhead, seq_len, seq_len]
-        observation: Observation to plot
-        layer_name: Name for the plot title
-    """
-    batch_size, nhead, seq_len, _ = attn_weights.shape
-    
-    # Use weights from first batch element
-    weights = attn_weights[observation].detach().cpu().numpy()
-    
-    # Create subplot grid
-    fig, axes = plt.subplots(1, nhead, figsize=(4 * nhead, 4))
-    if nhead == 1:
-        axes = [axes]  # Make it iterable
-    
-    for i, ax in enumerate(axes):
-        im = ax.imshow(weights[i], cmap='viridis', aspect='auto', vmin=0, vmax=1)
-        ax.set_title(f'Head {i+1}')
-        ax.set_xlabel('Key Position')
-        ax.set_ylabel('Query Position')
-        plt.colorbar(im, ax=ax)
-    
-    plt.suptitle(f'{layer_name} Weights (Batch 0)')
-    plt.tight_layout()
-    plt.show()
+next(iter(train_dataloader))[1].shape  # y_baseline
+next(iter(train_dataloader))[2].shape  # y_target
 
 
 # VAE + Explicit multi-head Attention layer
@@ -167,6 +146,10 @@ class DeltaTimeAttentionVAE(nn.Module):
         self.n_measurements = n_measurements
         self.nheads = nheads
         self.transformer_input_dim = transformer_input_dim
+        self.input_dim = input_dim
+
+        # Generate causal mask
+        self.causal_mask = self.generate_causal_mask(n_timepoints)
 
         # Dropout
         self.dropout = nn.Dropout(dropout)
@@ -212,6 +195,10 @@ class DeltaTimeAttentionVAE(nn.Module):
         # ------------- Final output layer -------------
         self.fc_out = nn.Linear(self.transformer_input_dim, 1)  # Predicts 1 value per timepoint
 
+        # variables updated at each iteration of the training
+        self.batch_size = 0
+        self.max_meas = 0
+
     def encode(self, x):
         x1 = self.encoder(x)
         mu = self.fc_mu(x1)
@@ -232,52 +219,69 @@ class DeltaTimeAttentionVAE(nn.Module):
     def generate_measurement_mask(self, batch_size, M):
         return torch.ones([batch_size, M])
 
-    def forward(self, batch):
+    def preprocess_input(self, batch):
         # x has shape (n x M x p)
         x = batch[0]
-        batch_size, max_meas, input_dim = x.shape
+        self.batch_size, self.max_meas, _ = x.shape
 
         # y has shape (n x M x T), so take only the first time point
         y0 = batch[1][..., 0:1]
         y0_flat = y0.view(-1, 1)
+        
+        return x, y0_flat
 
-        # Generate causal mask
-        causal_mask = self.generate_causal_mask(self.n_timepoints).to(x.device)
-
-        # ---------------------------- VAE ----------------------------
-        x_flat = x.view(-1, input_dim)  # (batch_size * max_measurements, input_dim)
+    def vae_module(self, x):
+        x_flat = x.view(-1, self.input_dim)  # (batch_size * max_measurements, input_dim)
         mu, logvar = self.encode(x_flat)
         z_hat = self.reparameterize(mu, logvar)
         x_hat_flat = self.decode(z_hat)  # Shape: [batch_size, input_dim]
-        x_hat = x_hat_flat.view(batch_size, max_meas, input_dim)  # Reshape back
+        x_hat = x_hat_flat.view(self.batch_size, self.max_meas, self.input_dim)  # Reshape back
+
+        return x_hat, x_hat_flat, mu, logvar
+
+    def make_transformer_input(self, x_hat_flat, y0_flat):
 
         # --------------------- Add the lagged outcome y ----------------------
         h = torch.cat([x_hat_flat, y0_flat], dim=-1)
-
         # --------------------- Expand over time dimension ---------------------
         h_exp = h.unsqueeze(1).repeat(1, self.n_timepoints, 1)  # [batch_size*M, T, input_dim]
-
         # --------------- Projection to transformer input dimension -----------
         h_in = self.projection_to_transformer(h_exp)
-        
         # --------------------- Time positional embedding ---------------------
         h_time = self.pos_encoder(h_in)
 
+        return h_time
+    
+    def outcome_prediction(self, h_out):
+        y_hat_flat = self.fc_out(self.dropout(h_out)).squeeze(-1)  # [batch_size*M, T]
+        y_hat = y_hat_flat.view(self.batch_size, self.max_meas, self.n_timepoints)
+
+        return y_hat
+
+    def forward(self, batch):
+        # ------------------ process input batch ------------------
+        x, y0_flat = self.preprocess_input(batch)
+
+        # ---------------------------- VAE ----------------------------
+        x_hat, x_hat_flat, mu, logvar = self.vae_module(x)
+
+        # ------ concatenate with y0, positional encoding and projection ------
+        h_time = self.make_transformer_input(x_hat_flat, y0_flat)
+
         # ----------------------- Transformer ------------------------------
         # This custom Transformer module expects input with shape: [batch_size, seq_len, input_dim]
-        h_out = self.transformer_module(h_time, attn_mask=causal_mask)
+        h_out = self.transformer_module(h_time, attn_mask=self.causal_mask)
 
-        # Predict outcomes
-        y_hat_flat = self.fc_out(self.dropout(h_out)).squeeze(-1)  # [batch_size*M, T]
-        y_hat = y_hat_flat.view(batch_size, max_meas, self.n_timepoints)
+        # --------------------- Predict outcomes ---------------------
+        y_hat = self.outcome_prediction(h_out)
         
         return x_hat, y_hat, mu, logvar
 
-    def loss(self, m_out, x, y):
+    def loss(self, m_out, batch):
         # here need to consider only y FROM time 1, no baseline
-        y_t = y[..., 1:]
+        y_t = batch[1][..., 1:]
         # Reconstruction loss (MSE)
-        BCE = nn.functional.mse_loss(m_out[0], x, reduction='sum')
+        BCE = nn.functional.mse_loss(m_out[0], batch[0], reduction='sum')
         # KL divergence
         KLD = -0.5 * torch.sum(1 + m_out[3] - m_out[2].pow(2) - m_out[3].exp())
         # label prediction loss
@@ -301,40 +305,19 @@ class DeltaTimeAttentionVAE(nn.Module):
             attn_weights: Attention weights tensor [batch_size, nhead, seq_len, seq_len]
         """
         with torch.no_grad():
-            # x has shape (n x M x p)
-            x = batch[0]
-            batch_size, max_meas, input_dim = x.shape
-
-            # y has shape (n x M x T), so take only the first time point
-            y0 = batch[1][..., 0:1]
-            y0_flat = y0.view(-1, 1)
-
-            # Generate causal mask
-            causal_mask = self.generate_causal_mask(self.n_timepoints).to(x.device)
+            # ------------------ process input batch ------------------
+            x, y0_flat = self.preprocess_input(batch)
 
             # ---------------------------- VAE ----------------------------
-            x_flat = x.view(-1, input_dim)  # (batch_size * max_measurements, input_dim)
-            mu, logvar = self.encode(x_flat)
-            z_hat = self.reparameterize(mu, logvar)
-            x_hat_flat = self.decode(z_hat)  # Shape: [batch_size, input_dim]
-            x_hat = x_hat_flat.view(batch_size, max_meas, input_dim)  # Reshape back
+            x_hat, x_hat_flat, mu, logvar = self.vae_module(x)
 
-            # --------------------- Add the lagged outcome y ----------------------
-            h = torch.cat([x_hat_flat, y0_flat], dim=-1)
-
-            # --------------------- Expand over time dimension ---------------------
-            h_exp = h.unsqueeze(1).repeat(1, self.n_timepoints, 1)  # [batch_size*M, T, input_dim]
-
-            # --------------- Projection to transformer input dimension -----------
-            h_in = self.projection_to_transformer(h_exp)
-            
-            # --------------------- Time positional embedding ---------------------
-            h_time = self.pos_encoder(h_in)
+            # ------ concatenate with y0, positional encoding and projection ------
+            h_time = self.make_transformer_input(x_hat_flat, y0_flat)
 
             attn_weights = self.transformer_module.cross_attn.get_attention_weights(
                 h_time,
                 h_time,
-                attn_mask=causal_mask
+                attn_mask=self.causal_mask
             )
         
         return attn_weights
@@ -377,58 +360,27 @@ model = DeltaTimeAttentionVAE(
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
 print(model)
+# Coefficients
+utils.count_parameters(model)
 
 #########################################################
 # x has shape (n x M x p)
-x = next(iter(train_dataloader))[0]
-batch_size, max_meas, input_dim = x.shape
+batch = next(iter(train_dataloader))
+# ------------------ process input batch ------------------
+x, y0_flat = model.preprocess_input(batch)
 
-# y has shape (n x M x T), so take only the first time point
-y0 = next(iter(train_dataloader))[1][..., 0:1]
-y0.shape
-y0_flat = y0.view(-1, 1) 
-y0_flat.shape
+# ---------------------------- VAE ----------------------------
+x_hat, x_hat_flat, mu, logvar = model.vae_module(x)
 
-# Generate causal mask
-causal_mask = model.generate_causal_mask(model.n_timepoints).to(x.device)
+# ------ concatenate with y0, positional encoding and projection ------
+h_time = model.make_transformer_input(x_hat_flat, y0_flat)
 
-# ------- VAE -------
-x_flat = x.view(-1, input_dim)  # (batch_size * max_measurements, input_dim)
-mu, logvar = model.encode(x_flat)
-z_hat = model.reparameterize(mu, logvar)
-x_hat_flat = model.decode(z_hat)  # Shape: [batch_size, input_dim]
-x_hat = x_hat_flat.view(batch_size, max_meas, input_dim)  # Reshape back
-x_hat.shape
-x_hat_flat.shape
-
-# --------------------- Add the lagged outcome y ----------------------
-h = torch.cat([x_hat_flat, y0_flat], dim=-1)
-h.shape
-
-# --------------------- Expand over time dimension ---------------------
-h_exp = h.unsqueeze(1).repeat(1, model.n_timepoints, 1)  # [batch_size*M, T, input_dim]
-h_exp.shape
-
-# --------------- Projection to transformer input dimension -----------
-h_in = model.projection_to_transformer(h_exp)
-h_in.shape
-
-# --------------------- Time positional embedding ---------------------
-h_time = model.pos_encoder(h_in)
-
-# --------- Transformer ---------
+# ----------------------- Transformer ------------------------------
 # This custom Transformer module expects input with shape: [batch_size, seq_len, input_dim]
-h_out = model.transformer_module(h_time, attn_mask=causal_mask)
-h_out.shape
-# check attn weights
-attn_weights = model.transformer_module.cross_attn.get_attention_weights(h_time, h_time, attn_mask=causal_mask)
-attn_weights.shape
-model.get_attention_weights(data_train)
+h_out = model.transformer_module(h_time, attn_mask=model.causal_mask)
 
-# Predict outcomes
-y_hat_flat = model.fc_out(model.dropout(h_out)).squeeze(-1)  # [batch_size*M, T]
-y_hat = y_hat_flat.view(batch_size, max_meas, model.n_timepoints)
-y_hat.shape
+# --------------------- Predict outcomes ---------------------
+y_hat = model.outcome_prediction(h_out)
 
 ##########################################################
 
@@ -456,9 +408,9 @@ trainer.best_val_loss / len(val_dataloader.dataset)
 model.load_state_dict(trainer.best_model.state_dict())
 
 # check attention weights
-attn_weights = model.get_attention_weights(data_train)
+attn_weights = model.get_attention_weights(tensor_data_train)
 attn_weights.shape
-plot_attention_weights(attn_weights, observation=10, layer_name="Attention")
+plots.plot_attention_weights(attn_weights, observation=10, layer_name="Attention")
 
 # 6. Latent Space Extraction
 model.eval()
@@ -476,7 +428,6 @@ model.eval()
 with torch.no_grad():
     X_hat = model(tensor_data_test)[0].cpu().numpy()
 X_hat.shape
-np.corrcoef(data_test[0][:, 0, :], X_hat[:, 0, :], rowvar=False)
 
 # plot
 plt.scatter(X_hat[:, 0, 0], data_test[0][:, 0, 0])
@@ -484,12 +435,17 @@ plt.show()
 plt.scatter(X_hat[:, 0, p-1], data_test[0][:, 0, p-1])
 plt.show()
 
+
 # LOSS components
 with torch.no_grad():
     test_pred = model(tensor_data_test)
 loss_x, loss_kl, loss_y = loss_components(
-    tensor_data_test[0], tensor_data_test[1],
-    x_hat=test_pred[0], y_hat=test_pred[1], mu=test_pred[2], logvar=test_pred[3]
+    x=tensor_data_test[0],
+    y=tensor_data_test[1],
+    x_hat=test_pred[0],
+    y_hat=test_pred[1],
+    mu=test_pred[2],
+    logvar=test_pred[3]
 )
 
 print(loss_kl.mean())
@@ -532,19 +488,160 @@ plt.title(f"Top Features Influencing t={t_point}")
 plt.show()
 
 
-# Coefficients
-from prettytable import PrettyTable
-def count_parameters(model):
-    table = PrettyTable(["Modules", "Parameters"])
-    total_params = 0
-    for name, parameter in model.named_parameters():
-        if not parameter.requires_grad:
-            continue
-        params = parameter.numel()
-        table.add_row([name, params])
-        total_params += params
-    print(table)
-    print(f"Total Trainable Params: {total_params}")
-    return total_params
+# VAE Latent space contributions from X
+def from_input_to_latent(model, x):
+    with torch.no_grad():
+        mu, logvar = model.encode(x)
 
-count_parameters(model)
+    return mu, logvar
+
+x = tensor_data_train[0]
+x = x.view(-1, model.input_dim)  # (batch_size * max_measurements, input_dim)
+mu, logvar = from_input_to_latent(model, x)
+mu.shape
+
+
+# Using SHAP
+model.eval()
+# Define a prediction function for the outcome y
+def shap_predict(x):
+    x = torch.FloatTensor(x)
+    mu, _ = from_input_to_latent(model, x)
+    return mu.numpy()
+
+x = tensor_data_train[0]
+x = x.view(-1, model.input_dim).numpy()  # (batch_size * max_measurements, input_dim)
+x.shape
+shap_predict(x).shape
+
+# Create KernelExplainer
+explainer = shap.KernelExplainer(shap_predict, x)  # Using 100 samples as background
+
+samples_to_explain = tensor_data_test[0][0:50].view(-1, model.input_dim).numpy()
+shap_values = explainer.shap_values(samples_to_explain)
+shap_values.shape # (n x p x k)
+
+# Plot feature importance
+feature_names = [f'Feature {i}' for i in range(p)]
+
+latent_axis = 0
+shap.summary_plot(shap_values[:, :, latent_axis], samples_to_explain, show = True)
+
+shap.plots.beeswarm(shap.Explanation(
+    values=shap_values[:,:, latent_axis],
+    base_values=explainer.expected_value[latent_axis], 
+    data=samples_to_explain, 
+    feature_names=feature_names
+    ),
+    max_display=6
+)
+
+feature = np.argmax(np.abs(shap_values[:,:, latent_axis]).sum(axis=0))
+feature
+
+fig = plt.figure()
+plt.violinplot(shap_values[:, feature, :])
+plt.xlabel("Latent Space Dimensions")
+# set style for the axes
+labels = range(latent_dim)
+fig.axes[0].set_xticks(np.arange(1, len(labels) + 1), labels=labels)
+fig.show()
+
+
+shap.plots.heatmap(shap.Explanation(
+    values=shap_values[:,:, latent_axis], 
+    base_values=explainer.expected_value[latent_axis], 
+    data=samples_to_explain, 
+    feature_names=feature_names
+    )
+)
+
+sample_ind = 0
+shap.force_plot(
+    explainer.expected_value[latent_axis],
+    shap_values[sample_ind, :, latent_axis],
+    samples_to_explain[sample_ind, :], 
+    feature_names=[f'Feature {i}' for i in range(p)],
+    matplotlib=True
+)
+
+
+# Looking for clusters using HDBSCAN
+from sklearn.cluster import HDBSCAN
+mean_shap_per_feature = shap_values.mean(axis=0)
+
+hdb = HDBSCAN(min_cluster_size=5)
+hdb.fit(mean_shap_per_feature)
+np.unique(hdb.labels_).tolist()
+
+# Visualize the clusters
+plt.figure(figsize=(10, 6))
+plt.scatter(
+    mean_shap_per_feature[:, 1], mean_shap_per_feature[:, 2],
+    c=hdb.labels_,
+    cmap='viridis', s=50, alpha=0.7, edgecolors='k')
+plt.colorbar()
+plt.title('HDBSCAN Clustering')
+plt.xlabel('Feature 1')
+plt.ylabel('Feature 2')
+plt.show()
+
+
+# Latent space analysis through the decoder
+# and
+# Latent space perturbation
+# Start from a baseline input
+baseline_input = tensor_data_train[0][0:1]
+batch_size, max_meas, _ = baseline_input.shape
+x_flat = baseline_input.view(-1, model.input_dim)  # (batch_size * max_measurements, input_dim)
+x_flat.shape
+
+with torch.no_grad():
+    mu, logvar = model.encode(x_flat)
+    z_hat = model.reparameterize(mu, logvar)
+    x_hat_flat = model.decode(z_hat)
+    x_hat = x_hat_flat.view(batch_size, max_meas, model.input_dim)
+
+# Choose a latent dimension to perturb and a perturbation amount
+perturbation_range = np.linspace(-2, 2, 5) # perturb from -2 to 2 std dev
+list_sensitivities = []
+
+for latent_dim_to_perturb in range(latent_dim):
+    reconstruction_changes = [] # List to store change per feature
+
+    for eps in perturbation_range:
+        z_perturbed = z_hat.clone()
+        z_perturbed[0, latent_dim_to_perturb] += eps
+        with torch.no_grad():
+            pert_x_hat_flat = model.decode(z_perturbed)
+            pert_x_hat = pert_x_hat_flat.view(batch_size, max_meas, model.input_dim)
+            # take difference
+            delta = pert_x_hat_flat - x_hat_flat
+            reconstruction_changes.append(delta.numpy())
+
+    # reconstruction_changes is a matrix [n_perturbations, p_features]
+    reconstruction_changes = np.array(reconstruction_changes)
+    reconstruction_changes.shape
+
+    # For each feature, calculate its sensitivity to the latent dimension
+    # (e.g., variance across perturbations or max absolute change)
+    feature_sensitivity = np.var(reconstruction_changes, axis=0)
+    feature_sensitivity.shape
+    np.round(feature_sensitivity, 2)
+    average_feature_sensitivity = feature_sensitivity.mean(axis=0)
+    # feature_sensitivity = np.max(np.abs(reconstruction_changes), axis=0)
+    list_sensitivities.append(average_feature_sensitivity)
+
+top_sensitive_features = np.argsort(average_feature_sensitivity)[::-1][:10]
+print(f"Features most sensitive to latent dim {latent_dim_to_perturb}: \n {top_sensitive_features}")
+
+for latent_dim_to_perturb in range(latent_dim):
+    plt.scatter(
+        range(list_sensitivities[latent_dim_to_perturb].shape[0]),
+        list_sensitivities[latent_dim_to_perturb],
+        s=12,
+        marker=latent_dim_to_perturb,
+        label=f"Latent Dimension {latent_dim_to_perturb}"
+    )
+plt.legend()
+plt.show()
