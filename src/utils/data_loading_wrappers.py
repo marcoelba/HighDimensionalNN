@@ -1,14 +1,7 @@
 import torch
-import torch.nn as nn
-import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset, Dataset
-from torch.nn.utils.parametrizations import orthogonal
 import numpy as np
-from scipy.linalg import toeplitz
-from scipy.stats import multivariate_normal
-from scipy.stats import pearsonr
 from sklearn.model_selection import train_test_split
-from prettytable import PrettyTable
 
 
 class DataSplit:
@@ -248,23 +241,3 @@ class CyclicAnnealer:
             beta = self.max_beta - 1 * (ratio - 0.5) * (self.max_beta - self.min_beta)
         
         return beta
-
-
-def print_correlations(X, X_hat):
-    for i in range(X.shape[1]):
-        corr, _ = pearsonr(X[:, i], X_hat[:, i])
-        print(f"Dimension {i+1}: r = {corr:.3f}")
-
-
-def count_parameters(model):
-    table = PrettyTable(["Modules", "Parameters"])
-    total_params = 0
-    for name, parameter in model.named_parameters():
-        if not parameter.requires_grad:
-            continue
-        params = parameter.numel()
-        table.add_row([name, params])
-        total_params += params
-    print(table)
-    print(f"Total Trainable Params: {total_params}")
-    return total_params

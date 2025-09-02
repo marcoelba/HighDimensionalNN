@@ -14,13 +14,13 @@ import shap
 import os
 os.chdir("./src")
 
-from vae_regression import data_generation
-from vae_regression import training
-from vae_regression.models.multi_head_attention_layer import MultiHeadSelfAttentionWithWeights, TransformerEncoderLayerWithWeights
-from vae_regression.models.sinusoidal_position_encoder import SinusoidalPositionalEncoding
+from vae_attention import data_generation
+from vae_attention import training
+from vae_attention.modules.multi_head_attention_layer import MultiHeadSelfAttentionWithWeights, TransformerEncoderLayerWithWeights
+from vae_attention.modules.sinusoidal_position_encoder import SinusoidalPositionalEncoding
 
-from model_utils import utils
-from model_utils import plots
+from utils import data_loading_wrappers
+from utils import plots
 
 
 torch.get_num_threads()
@@ -225,10 +225,10 @@ class DeltaTimeAttentionVAE(nn.Module):
         self.batch_size, self.max_meas, _ = x.shape
 
         # y has shape (n x M x T), so take only the first time point
-        y0 = batch[1][..., 0:1]
-        y0_flat = y0.view(-1, 1)
+        y_baseline = batch[1]
+        y_baseline_flat = y_baseline.view(-1, 1)
         
-        return x, y0_flat
+        return x, y_baseline_flat
 
     def vae_module(self, x):
         x_flat = x.view(-1, self.input_dim)  # (batch_size * max_measurements, input_dim)
@@ -260,13 +260,13 @@ class DeltaTimeAttentionVAE(nn.Module):
 
     def forward(self, batch):
         # ------------------ process input batch ------------------
-        x, y0_flat = self.preprocess_input(batch)
+        x, y_baseline_flat = self.preprocess_input(batch)
 
         # ---------------------------- VAE ----------------------------
         x_hat, x_hat_flat, mu, logvar = self.vae_module(x)
 
         # ------ concatenate with y0, positional encoding and projection ------
-        h_time = self.make_transformer_input(x_hat_flat, y0_flat)
+        h_time = self.make_transformer_input(x_hat_flat, y_baseline_flat)
 
         # ----------------------- Transformer ------------------------------
         # This custom Transformer module expects input with shape: [batch_size, seq_len, input_dim]
@@ -278,14 +278,12 @@ class DeltaTimeAttentionVAE(nn.Module):
         return x_hat, y_hat, mu, logvar
 
     def loss(self, m_out, batch):
-        # here need to consider only y FROM time 1, no baseline
-        y_t = batch[1][..., 1:]
         # Reconstruction loss (MSE)
         BCE = nn.functional.mse_loss(m_out[0], batch[0], reduction='sum')
         # KL divergence
         KLD = -0.5 * torch.sum(1 + m_out[3] - m_out[2].pow(2) - m_out[3].exp())
         # label prediction loss
-        PredMSE = nn.functional.mse_loss(m_out[1], y_t, reduction='sum')
+        PredMSE = nn.functional.mse_loss(m_out[1], batch[2], reduction='sum')
 
         return self.reconstruction_weight * BCE + self.beta * KLD + self.prediction_weight * PredMSE
     
@@ -441,7 +439,7 @@ with torch.no_grad():
     test_pred = model(tensor_data_test)
 loss_x, loss_kl, loss_y = loss_components(
     x=tensor_data_test[0],
-    y=tensor_data_test[1],
+    y=tensor_data_test[2],
     x_hat=test_pred[0],
     y_hat=test_pred[1],
     mu=test_pred[2],
@@ -590,7 +588,7 @@ plt.show()
 # Latent space analysis through the decoder
 # and
 # Latent space perturbation
-# Start from a baseline input
+# Start from a baseline input for ONE observation
 baseline_input = tensor_data_train[0][0:1]
 batch_size, max_meas, _ = baseline_input.shape
 x_flat = baseline_input.view(-1, model.input_dim)  # (batch_size * max_measurements, input_dim)
