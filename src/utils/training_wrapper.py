@@ -6,7 +6,9 @@ import copy
 
 
 class Training:
-    def __init__(self, train_dataloader, val_dataloader=None):
+    def __init__(self, train_dataloader, val_dataloader=None, noisy_gradient=False):
+
+        self.noisy_gradient = noisy_gradient
 
         self.losses = dict()
         
@@ -24,8 +26,23 @@ class Training:
 
         self.best_val_loss = float('inf')
         self.best_model = None
+    
+    def add_gradient_noise(self, model, noise_std=0.01):
+        """
+        Adds Gaussian noise to the gradients of the model parameters.
+        Called just before optimizer.step().
+        """
+        with torch.no_grad():
+            for param in model.parameters():
+                if param.grad is not None:
+                    # Get the gradient
+                    grad = param.grad
+                    # Generate noise of the same shape as the gradient
+                    noise = torch.randn_like(grad) * noise_std
+                    # Add the noise to the gradient
+                    param.grad.add_(noise)
 
-    def training_loop(self, model, optimizer, num_epochs):
+    def training_loop(self, model, optimizer, num_epochs, gradient_noise_std=0.01):
 
         for epoch in range(num_epochs):
             model.train()
@@ -39,14 +56,20 @@ class Training:
                 model_output = model(batch_data)
                 loss = model.loss(model_output, batch_data)
                 
-                loss.backward()
-                train_loss += loss.item()
+                loss.backward() # compute gradients
+                if self.noisy_gradient:
+                    self.add_gradient_noise(model, noise_std=gradient_noise_std)
+
                 optimizer.step()
+                
+                train_loss += loss.item()
+
             
             self.losses["train"].append(train_loss / self.len_train)
             print(f'Epoch {epoch+1}, Loss: {train_loss / self.len_train:.4f}')
             
             if self.validation:
+                model.eval()
                 val_loss = 0
                 with torch.no_grad():
                     for batch_data in self.val_dataloader:
