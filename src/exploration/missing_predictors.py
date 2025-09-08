@@ -345,8 +345,11 @@ for (fold, model) in enumerate(all_models):
 ensemble_predictions[0]
 ensemble_min = np.min(ensemble_predictions, axis=1)
 ensemble_max = np.max(ensemble_predictions, axis=1)
+ensemble_mean = np.mean(ensemble_predictions, axis=1)
 
 plt.scatter(np.arange(0, n_test), tensor_data_test[1])
+plt.scatter(np.arange(0, n_test), tensor_data_test[1], color="red")
+
 for i in range(n_test):
     plt.vlines(
         x=i, ymin=ensemble_min[i], ymax=ensemble_max[i], 

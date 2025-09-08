@@ -87,3 +87,7 @@ data/
 *.npz
 *.npy
 
+# draw.io hidden files
+*.drawio.bkp
+
+
