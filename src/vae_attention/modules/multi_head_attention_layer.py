@@ -12,15 +12,13 @@ class MultiHeadCrossAttentionWithWeights(nn.Module):
         input_dim (int): Total dimension of the model.
         nheads (int): Number of attention heads.
         dropout_attention (float, optional): Attention Dropout probability. Default: 0.1
-        dropout (float, optional): Output Dropout probability. Default: 0.1
         bias (bool, optional): Add bias to linear projections. Default: True
     """
-    def __init__(self, input_dim, nheads, dropout_attention=0.1, dropout=0.1, bias=True):
+    def __init__(self, input_dim, nheads, dropout_attention=0.1, bias=True):
         super().__init__()
         self.input_dim = input_dim
         self.nheads = nheads
         self.dropout_attention = dropout_attention
-        self.dropout = dropout
         
         # Ensure d_model is divisible by nhead
         assert input_dim % nheads == 0, "input_dim must be divisible by nheads"
@@ -34,9 +32,6 @@ class MultiHeadCrossAttentionWithWeights(nn.Module):
         # Output projection
         self.out_proj = nn.Linear(input_dim, input_dim, bias=bias)
         
-        # Dropout layer
-        self.dropout_layer = nn.Dropout(dropout)
-
     def forward(self, query, key, value, attn_mask=None, is_causal=False):
         """
         This forward pass definition allows for cross-attention. If the input is only X, then it becomes self-attention.
@@ -80,10 +75,9 @@ class MultiHeadCrossAttentionWithWeights(nn.Module):
         # 6. Concatenate heads: [batch_size, seq_len, d_model]
         attn_output = attn_output.contiguous().view(batch_size, seq_len, self.input_dim)
         
-        # 7. Apply output projection and dropout
+        # 7. Apply output projection
         # This layer is needed to mix the multiple heads outputs
         output = self.out_proj(attn_output)
-        output = self.dropout_layer(output)
         
         return output
 
@@ -134,9 +128,9 @@ class MultiHeadSelfAttentionWithWeights(nn.Module):
     """
     Simplified wrapper for self-attention only.
     """
-    def __init__(self, input_dim, nheads, dropout_attention=0.1, dropout=0.1, bias=True):
+    def __init__(self, input_dim, nheads, dropout_attention=0.1, bias=True):
         super().__init__()
-        self.mha = MultiHeadCrossAttentionWithWeights(input_dim, nheads, dropout_attention, dropout, bias)
+        self.mha = MultiHeadCrossAttentionWithWeights(input_dim, nheads, dropout_attention, bias)
     
     def forward(self, x, attn_mask=None, is_causal=False):
         # For self-attention: use x for query, key, and value
@@ -156,14 +150,13 @@ class TransformerEncoderLayerWithWeights(nn.Module):
         activation: Add activation to output FFN. Default: gelu
     """
 
-    def __init__(self, input_dim, nheads, dim_feedforward, dropout_attention=0.0, dropout=0.0):
+    def __init__(self, input_dim, nheads, dim_feedforward, dropout_attention=0.1, dropout=0.1):
         super().__init__()
         # custom attention class, returns the weights in position 1
         self.cross_attn = MultiHeadCrossAttentionWithWeights(
             input_dim,
             nheads,
             dropout_attention,
-            dropout,
             bias=True
         )
         # Feed-Forward layers
