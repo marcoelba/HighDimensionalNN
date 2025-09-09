@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 class VAE(nn.Module):
     """
-    Transformer module that returns attention weights.
+    Variational Autoencoder module
     
     Args:
         input_dim (int): Input dimension for VAE.
@@ -51,7 +51,7 @@ class VAE(nn.Module):
     def decode(self, z):
         return self.decoder(z)
 
-    def forward(self, x, attn_mask=None):
+    def forward(self, x):
         mu, logvar = self.encode(x)
         z_hat = self.reparameterize(mu, logvar)
         x_hat = self.decode(z_hat)

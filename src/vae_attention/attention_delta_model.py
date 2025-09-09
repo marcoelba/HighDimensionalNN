@@ -124,12 +124,25 @@ next(iter(train_dataloader))[2].shape  # y_target
 
 # VAE + Explicit multi-head Attention layer
 class DeltaTimeAttentionVAE(nn.Module):
+    """
+    Model for longitudinal data with repeated measurements over time and another dimension (for example multiple interventions).
+    
+    Args:
+        input_dim (int): Total dimension of the model.
+        n_timepoints (int): Time points.
+        n_measurements (int): Number of repeated measurements.
+        vae_latent_dim (int): VAE latent space dimension.
+        nheads (int): Number of attention heads.
+        dropout (float, optional): Dropout probability. Default: 0.0
+        dropout_attention (float, optional): Dropout probability. Default: 0.0
+        activation: Add activation to output FFN. Default: gelu
+    """
     def __init__(
         self,
-        input_dim,          # Dimension of fixed input X (e.g., number of genes)
-        n_timepoints,     # Number of timepoints to predict in the future
+        input_dim,
+        n_timepoints,
         n_measurements,
-        vae_latent_dim,         # Dimension of latent space Z in VAE
+        vae_latent_dim,
         vae_input_to_latent_dim,
         max_len_position_enc,
         transformer_input_dim,

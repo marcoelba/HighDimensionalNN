@@ -5,6 +5,13 @@ import math
 
 
 class SinusoidalPositionalEncoding(nn.Module):
+    """
+    Add time encoding to array through the Sinusoidal Positional Encoding
+
+    Args:
+        d_model (int): Model dimension.
+        max_len (int): Maximum length that can be encoded
+    """
     def __init__(self, d_model, max_len=5000):
         super().__init__()
         self.d_model = d_model

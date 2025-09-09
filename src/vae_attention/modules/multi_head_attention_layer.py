@@ -44,22 +44,27 @@ class MultiHeadCrossAttentionWithWeights(nn.Module):
         Returns:
             output: Contextualized output tensor [batch_size, seq_len, input_dim]
         """
-        batch_size, seq_len, _ = query.shape
-        
+        query_shape = query.shape
+        # Get all dimensions except the last two
+        leading_dims = query_shape[:-2]
+        seq_len = query_shape[-2]
+
         # 1. Project inputs to Q, K, V
-        Q = self.w_q(query)  # [batch_size, seq_len, input_dim]
-        K = self.w_k(key)    # [batch_size, seq_len, input_dim]
-        V = self.w_v(value)  # [batch_size, seq_len, input_dim]
-        
+        # [batch_size, ..., seq_len, input_dim]
+        Q = self.w_q(query)
+        K = self.w_k(key)
+        V = self.w_v(value)
+
         # 2. Reshape for multi-head: [batch_size, seq_len, nhead, d_k]
-        Q = Q.view(batch_size, seq_len, self.nheads, self.head_dim)
-        K = K.view(batch_size, seq_len, self.nheads, self.head_dim)
-        V = V.view(batch_size, seq_len, self.nheads, self.head_dim)
+        # Reshape: [..., seq_len, nheads, head_dim]
+        Q = Q.reshape(*leading_dims, seq_len, self.nheads, self.head_dim)
+        K = K.reshape(*leading_dims, seq_len, self.nheads, self.head_dim)
+        V = V.reshape(*leading_dims, seq_len, self.nheads, self.head_dim)
         
         # 3. Transpose to [batch_size, nhead, seq_len, head_dim]
-        Q = Q.transpose(1, 2)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
+        Q = Q.transpose(-3, -2)
+        K = K.transpose(-3, -2)
+        V = V.transpose(-3, -2)
         
         # 4. Compute scaled dot-product attention
         attn_output = F.scaled_dot_product_attention(
@@ -69,11 +74,11 @@ class MultiHeadCrossAttentionWithWeights(nn.Module):
             is_causal=is_causal
         )
 
-        # 5. Transpose back: [batch_size, seq_len, nhead, d_k]
-        attn_output = attn_output.transpose(1, 2)
+        # 5. Transpose back: [batch_size, ..., seq_len, nhead, d_k]
+        attn_output = attn_output.transpose(-3, -2)
         
         # 6. Concatenate heads: [batch_size, seq_len, d_model]
-        attn_output = attn_output.contiguous().view(batch_size, seq_len, self.input_dim)
+        attn_output = attn_output.reshape(*attn_output.shape[:-2], -1)
         
         # 7. Apply output projection
         # This layer is needed to mix the multiple heads outputs
@@ -99,19 +104,22 @@ class MultiHeadCrossAttentionWithWeights(nn.Module):
             attn_weights: Attention weights tensor [batch_size, nhead, seq_len, seq_len]
         """
         with torch.no_grad():
-            batch_size, seq_len, _ = query.shape
-            
+            query_shape = query.shape
+            # Get all dimensions except the last two
+            leading_dims = query_shape[:-2]
+            seq_len = query_shape[-2]
+
             # 1. Project inputs to Q, K, V
-            Q = self.w_q(query)  # [batch_size, seq_len, input_dim]
-            K = self.w_k(key)    # [batch_size, seq_len, input_dim]
+            # [batch_size, ..., seq_len, input_dim]
+            Q = self.w_q(query)
+            K = self.w_k(key)
             
-            # 2. Reshape for multi-head: [batch_size, seq_len, nhead, d_k]
-            Q = Q.view(batch_size, seq_len, self.nheads, self.head_dim)
-            K = K.view(batch_size, seq_len, self.nheads, self.head_dim)
+            Q = Q.reshape(*leading_dims, seq_len, self.nheads, self.head_dim)
+            K = K.reshape(*leading_dims, seq_len, self.nheads, self.head_dim)
             
-            # 3. Transpose to [batch_size, nhead, seq_len, head_dim]
-            Q = Q.transpose(1, 2)
-            K = K.transpose(1, 2)
+            # 3. Transpose to [batch_size, ..., nhead, seq_len, head_dim]
+            Q = Q.transpose(-3, -2)
+            K = K.transpose(-3, -2)
 
             # compute the weights
             L, S = Q.size(-2), K.size(-2)
