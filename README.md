@@ -13,4 +13,5 @@ Out aim is to provide an alternative approach which relies on using over-paramet
 ### Building the model
 Any model can be made of single module blocks, for example:
 
-<p align='center'><a href='https://github.com/marcoelba/HighDimensionalNN/graphs_vae_attention'><img src='.github/full_blocks.pdf' width='800'></a></p>
+![Plot SVG](graphs_vae_attention/full_blocks.svg)
+*Figure: Example of longitudinal model*
