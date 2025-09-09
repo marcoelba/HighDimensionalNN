@@ -14,13 +14,16 @@ import shap
 import os
 os.chdir("./src")
 
-from vae_attention import data_generation
-from vae_attention import training
-from vae_attention.modules.multi_head_attention_layer import MultiHeadSelfAttentionWithWeights, TransformerEncoderLayerWithWeights
-from vae_attention.modules.sinusoidal_position_encoder import SinusoidalPositionalEncoding
+from utils import training_wrapper
 
 from utils import data_loading_wrappers
+from utils.model_output_details import count_parameters
 from utils import plots
+from utils import data_generation
+
+from vae_attention.modules.transformer import TransformerEncoderLayerWithWeights
+from vae_attention.modules.sinusoidal_position_encoder import SinusoidalPositionalEncoding
+from vae_attention.modules.vae import VAE
 
 
 torch.get_num_threads()
@@ -79,6 +82,7 @@ plt.show()
 plt.plot(y[0, :, :].transpose())
 plt.show()
 
+
 # y0 (y at baseline) is actually an additional feature, because it is measured before any intervention
 y.shape
 y_baseline = y[:, :, 0:1]
@@ -94,7 +98,7 @@ y_target_tensor = torch.FloatTensor(y_target).to(torch.device("cpu"))
 y_baseline_tensor = torch.FloatTensor(y_baseline).to(torch.device("cpu"))
 
 # split data
-data_split = utils.DataSplit(X.shape[0], test_size=n_test, val_size=n_val)
+data_split = data_loading_wrappers.DataSplit(X.shape[0], test_size=n_test, val_size=n_val)
 print("train: ", len(data_split.train_index), 
     "val: ", len(data_split.val_index),
     "test: ", len(data_split.test_index)
@@ -109,9 +113,9 @@ tensor_data_test = data_split.get_test(X_tensor, y_baseline_tensor, y_target_ten
 tensor_data_val = data_split.get_val(X_tensor, y_baseline_tensor, y_target_tensor)
 
 # make tensor data loaders
-train_dataloader = utils.make_data_loader(*tensor_data_train, batch_size=batch_size)
-test_dataloader = utils.make_data_loader(*tensor_data_test, batch_size=batch_size)
-val_dataloader = utils.make_data_loader(*tensor_data_val, batch_size=batch_size)
+train_dataloader = data_loading_wrappers.make_data_loader(*tensor_data_train, batch_size=batch_size)
+test_dataloader = data_loading_wrappers.make_data_loader(*tensor_data_test, batch_size=batch_size)
+val_dataloader = data_loading_wrappers.make_data_loader(*tensor_data_val, batch_size=batch_size)
 
 next(iter(train_dataloader))[0].shape  # X
 next(iter(train_dataloader))[1].shape  # y_baseline
@@ -147,6 +151,9 @@ class DeltaTimeAttentionVAE(nn.Module):
         self.nheads = nheads
         self.transformer_input_dim = transformer_input_dim
         self.input_dim = input_dim
+        # variables updated at each iteration of the training
+        self.batch_size = 0
+        self.max_meas = 0
 
         # Generate causal mask
         self.causal_mask = self.generate_causal_mask(n_timepoints)
@@ -155,18 +162,11 @@ class DeltaTimeAttentionVAE(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         # ------------- VAE -------------
-        # Encoder
-        self.encoder = nn.Sequential(
-            nn.Linear(input_dim, vae_input_to_latent_dim),
-            nn.ReLU()
-        )
-        self.fc_mu = nn.Linear(vae_input_to_latent_dim, vae_latent_dim)
-        self.fc_var = nn.Linear(vae_input_to_latent_dim, vae_latent_dim)
-        # Decoder
-        self.decoder = nn.Sequential(
-            nn.Linear(vae_latent_dim, vae_input_to_latent_dim),
-            nn.ReLU(),
-            nn.Linear(vae_input_to_latent_dim, input_dim)
+        self.vae = VAE(
+            input_dim=input_dim,
+            vae_input_to_latent_dim=vae_input_to_latent_dim,
+            vae_latent_dim=vae_latent_dim,
+            dropout=0.0
         )
 
         # ---- non-linear projection of [X, y_t0] to common input dimension -----
@@ -194,24 +194,6 @@ class DeltaTimeAttentionVAE(nn.Module):
 
         # ------------- Final output layer -------------
         self.fc_out = nn.Linear(self.transformer_input_dim, 1)  # Predicts 1 value per timepoint
-
-        # variables updated at each iteration of the training
-        self.batch_size = 0
-        self.max_meas = 0
-
-    def encode(self, x):
-        x1 = self.encoder(x)
-        mu = self.fc_mu(x1)
-        lvar = self.fc_var(x1)
-        return mu, lvar
-    
-    def reparameterize(self, mu, logvar):
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return mu + eps * std
-    
-    def decode(self, z):
-        return self.decoder(z)
     
     def generate_causal_mask(self, T):
         return torch.triu(torch.ones(T, T) * float('-inf'), diagonal=1)
@@ -229,15 +211,6 @@ class DeltaTimeAttentionVAE(nn.Module):
         y_baseline_flat = y_baseline.view(-1, 1)
         
         return x, y_baseline_flat
-
-    def vae_module(self, x):
-        x_flat = x.view(-1, self.input_dim)  # (batch_size * max_measurements, input_dim)
-        mu, logvar = self.encode(x_flat)
-        z_hat = self.reparameterize(mu, logvar)
-        x_hat_flat = self.decode(z_hat)  # Shape: [batch_size, input_dim]
-        x_hat = x_hat_flat.view(self.batch_size, self.max_meas, self.input_dim)  # Reshape back
-
-        return x_hat, x_hat_flat, mu, logvar
 
     def make_transformer_input(self, x_hat_flat, y0_flat):
 
@@ -263,8 +236,10 @@ class DeltaTimeAttentionVAE(nn.Module):
         x, y_baseline_flat = self.preprocess_input(batch)
 
         # ---------------------------- VAE ----------------------------
-        x_hat, x_hat_flat, mu, logvar = self.vae_module(x)
-
+        x_flat = x.view(-1, self.input_dim)  # (batch_size * max_measurements, input_dim)
+        x_hat_flat, mu, logvar = self.vae(x_flat)
+        x_hat = x_hat_flat.view(self.batch_size, self.max_meas, self.input_dim)  # Reshape back
+        
         # ------ concatenate with y0, positional encoding and projection ------
         h_time = self.make_transformer_input(x_hat_flat, y_baseline_flat)
 
@@ -307,7 +282,9 @@ class DeltaTimeAttentionVAE(nn.Module):
             x, y0_flat = self.preprocess_input(batch)
 
             # ---------------------------- VAE ----------------------------
-            x_hat, x_hat_flat, mu, logvar = self.vae_module(x)
+            x_flat = x.view(-1, self.input_dim)  # (batch_size * max_measurements, input_dim)
+            x_hat_flat, mu, logvar = self.vae(x_flat)
+            x_hat = x_hat_flat.view(self.batch_size, self.max_meas, self.input_dim)  # Reshape back
 
             # ------ concatenate with y0, positional encoding and projection ------
             h_time = self.make_transformer_input(x_hat_flat, y0_flat)
@@ -359,7 +336,7 @@ optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
 print(model)
 # Coefficients
-utils.count_parameters(model)
+count_parameters(model)
 
 #########################################################
 # x has shape (n x M x p)
@@ -388,7 +365,7 @@ num_epochs = 200
 # plt.plot([c_annealer.get_beta(ii) for ii in range(1,num_epochs)])
 # plt.show()
 
-trainer = training.Training(train_dataloader, val_dataloader)
+trainer = training_wrapper.Training(train_dataloader, val_dataloader)
 
 trainer.training_loop(model, optimizer, num_epochs)
 
@@ -507,7 +484,7 @@ def shap_predict(x):
     mu, _ = from_input_to_latent(model, x)
     return mu.numpy()
 
-x = tensor_data_train[0]
+x = tensor_data_train[0][0:50]
 x = x.view(-1, model.input_dim).numpy()  # (batch_size * max_measurements, input_dim)
 x.shape
 shap_predict(x).shape
