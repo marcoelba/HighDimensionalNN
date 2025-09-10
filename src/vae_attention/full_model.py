@@ -3,9 +3,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# import os
-# os.chdir("./src")
-
 from utils.decorator import compose_docstring
 
 from vae_attention.modules.transformer import TransformerEncoderLayerWithWeights
