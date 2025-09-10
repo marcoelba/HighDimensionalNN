@@ -374,9 +374,6 @@ y_hat = model.outcome_prediction(h_out)
 
 # 5. Training Loop
 num_epochs = 200
-# c_annealer = utils.CyclicAnnealer(cycle_length=num_epochs / 2, min_beta=0.0, max_beta=1.0, mode='cosine')
-# plt.plot([c_annealer.get_beta(ii) for ii in range(1,num_epochs)])
-# plt.show()
 
 trainer = training_wrapper.Training(train_dataloader, val_dataloader)
 

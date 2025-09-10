@@ -1,9 +1,7 @@
 # Test full model
 import torch
-import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-import torch.nn.functional as F
 
 import numpy as np
 from scipy.stats import pearsonr
@@ -21,11 +19,10 @@ from utils.model_output_details import count_parameters
 from utils import plots
 from utils import data_generation
 
-from vae_attention.modules.transformer import TransformerEncoderLayerWithWeights
-from vae_attention.modules.sinusoidal_position_encoder import SinusoidalPositionalEncoding
-from vae_attention.modules.vae import VAE
+from vae_attention.full_model import DeltaTimeAttentionVAE
 
 
+# set number of cores to use
 torch.get_num_threads()
 torch.set_num_threads(6)
 
@@ -165,3 +162,20 @@ y_hat.shape
 # check attention weights
 attn_weights = model.get_attention_weights(tensor_data_train)
 attn_weights.shape
+
+
+# ----------- Training Loop -----------
+num_epochs = 200
+
+trainer = training_wrapper.Training(train_dataloader, val_dataloader)
+
+trainer.training_loop(model, optimizer, num_epochs)
+
+plt.plot(trainer.losses["train"], label="train")
+plt.plot(trainer.losses["val"], label="val")
+plt.vlines(np.argmin(trainer.losses["val"]), 0, max(trainer.losses["val"]), color="red")
+plt.vlines(np.argmin(trainer.losses["train"]), 0, max(trainer.losses["train"]), color="blue")
+plt.hlines(np.min(trainer.losses["val"]), 0, len(trainer.losses["val"]), color="red", linestyles="--")
+plt.hlines(np.min(trainer.losses["train"]), 0, len(trainer.losses["val"]), color="blue", linestyles="--")
+plt.legend()
+plt.show()

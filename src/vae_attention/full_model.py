@@ -3,8 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import os
-os.chdir("./src")
+# import os
+# os.chdir("./src")
 
 from utils.decorator import compose_docstring
 
@@ -119,9 +119,6 @@ class DeltaTimeAttentionVAE(nn.Module):
         # Input features
         x = batch[0]
         y_baseline = batch[1]
-
-        # y_baseline_flat = y_baseline.view(-1, 1)
-        # self.batch_size, self.max_meas, _ = x.shape
         
         return x, y_baseline
 
@@ -135,8 +132,6 @@ class DeltaTimeAttentionVAE(nn.Module):
         new_shape = list(h.shape)
         new_shape.insert(time_dim, self.n_timepoints)  # Insert T at the correct position
         h_exp = h.unsqueeze(time_dim).expand(new_shape)
-
-        # h_exp = h.unsqueeze(1).repeat(1, self.n_timepoints, 1)  # [batch_size, T, input_dim]
 
         # --------------- Projection to transformer input dimension -----------
         h_in = self.projection_to_transformer(h_exp)
@@ -155,7 +150,6 @@ class DeltaTimeAttentionVAE(nn.Module):
         x, y_baseline = self.preprocess_input(batch)
 
         # ---------------------------- VAE ----------------------------
-        # x_flat = x.view(-1, self.input_dim)  # (batch_size * max_measurements, input_dim)
         x_hat, mu, logvar = self.vae(x)
         
         # ------ concatenate with y0, positional encoding and projection ------
@@ -167,9 +161,6 @@ class DeltaTimeAttentionVAE(nn.Module):
 
         # --------------------- Predict outcomes ---------------------
         y_hat = self.outcome_prediction(h_out)
-
-        # y_hat = y_hat_flat.view(self.batch_size, self.max_meas, self.n_timepoints)
-        # x_hat_t = x_hat.view(self.batch_size, self.max_meas, self.input_dim)  # Reshape back
 
         return x_hat, y_hat, mu, logvar
 
@@ -199,22 +190,20 @@ class DeltaTimeAttentionVAE(nn.Module):
         how much did it pay attention to the token at position j (Key)?
 
         Args:
-            x: Input tensors, same shape as used in training
+            batch: Input batch tensors, same shape as used in training
         
         Returns:
             attn_weights: Attention weights tensor [batch_size, nhead, seq_len, seq_len]
         """
         with torch.no_grad():
             # ------------------ process input batch ------------------
-            x, y0_flat = self.preprocess_input(batch)
+            x, y_baseline = self.preprocess_input(batch)
 
             # ---------------------------- VAE ----------------------------
-            x_flat = x.view(-1, self.input_dim)  # (batch_size * max_measurements, input_dim)
-            x_hat_flat, mu, logvar = self.vae(x_flat)
-            x_hat = x_hat_flat.view(self.batch_size, self.max_meas, self.input_dim)  # Reshape back
-
+            x_hat, mu, logvar = self.vae(x)
+            
             # ------ concatenate with y0, positional encoding and projection ------
-            h_time = self.make_transformer_input(x_hat_flat, y0_flat)
+            h_time = self.make_transformer_input(x_hat, y_baseline)
 
             attn_weights = self.transformer_module.cross_attn.get_attention_weights(
                 h_time,
@@ -223,4 +212,3 @@ class DeltaTimeAttentionVAE(nn.Module):
             )
         
         return attn_weights
-
