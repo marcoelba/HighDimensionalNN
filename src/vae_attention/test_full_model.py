@@ -38,6 +38,8 @@ p1 = 30
 p0 = p - p1
 n_timepoints = 5
 n_measurements = 4
+p_static = 3
+p_interventions = 0
 batch_size = 50
 
 # custom W
@@ -46,14 +48,6 @@ W = np.random.choice(
     [-1.5, -1, -0.8, -0.5, 1.5, 1, 0.8, 0.5],
     size=(k, p)
 )
-first_half = range(0, int(p / 2))
-second_half = range(int(p / 2), p)
-# # block structure
-# W[0, first_half] = 0.0
-# W[1, first_half] = 0.0
-# W[3, second_half] = 0.0
-# W[4, second_half] = 0.0
-# # first p0 features do NOT have any effect
 W[:, 0:p0] = 0
 
 beta = np.array([-1, 1, -1, 1, -1])
@@ -63,15 +57,26 @@ beta[1, 1:] = [2., 3., 1., 1]
 beta[2, 1:] = [0, 0, 0, 0]
 
 beta_time = np.array([0, 1, 2, 1, 0, -1])
+beta_static = np.random.choice([-1, 1], size=p_static)
+beta_interventions = np.random.choice([-1, 1], size=(n_measurements, p_interventions))
 
-y, X, Z, beta = data_generation.multi_longitudinal_data_generation(
+dict_gen = data_generation.multi_longitudinal_data_generation(
     n, k, p, n_timepoints, n_measurements,
+    p_static=p_static,
+    p_interventions=p_interventions,
     noise_scale = 0.5,
     W=W,
     beta=beta,
-    beta_time=beta_time
+    beta_time=beta_time,
+    beta_interventions=beta_interventions,
+    beta_static=beta_static
 )
 
+y = dict_gen["y"]
+X = dict_gen["X"]
+X_static = dict_gen["X_static"]
+X_interventions = dict_gen["X_interventions"]
+Z = dict_gen["Z"]
 
 # y0 (y at baseline) is actually an additional feature, because it is measured before any intervention
 y.shape
@@ -84,6 +89,7 @@ y_target.shape
 # get tensors
 X_tensor = torch.FloatTensor(X).to(torch.device("cpu"))
 Z_tensor = torch.FloatTensor(Z).to(torch.device("cpu"))
+X_static_tensor = torch.FloatTensor(X_static).to(torch.device("cpu"))
 y_target_tensor = torch.FloatTensor(y_target).to(torch.device("cpu"))
 y_baseline_tensor = torch.FloatTensor(y_baseline).to(torch.device("cpu"))
 
@@ -94,13 +100,9 @@ print("train: ", len(data_split.train_index),
     "test: ", len(data_split.test_index)
 )
 
-data_train = data_split.get_train(X, y_baseline, Z, y_target)
-data_test = data_split.get_test(X, y_baseline, Z, y_target)
-data_val = data_split.get_val(X, y_baseline, Z, y_target)
-
-tensor_data_train = data_split.get_train(X_tensor, y_baseline_tensor, y_target_tensor)
-tensor_data_test = data_split.get_test(X_tensor, y_baseline_tensor, y_target_tensor)
-tensor_data_val = data_split.get_val(X_tensor, y_baseline_tensor, y_target_tensor)
+tensor_data_train = data_split.get_train(X_tensor, X_static_tensor, y_baseline_tensor, y_target_tensor)
+tensor_data_test = data_split.get_test(X_tensor, X_static_tensor, y_baseline_tensor, y_target_tensor)
+tensor_data_val = data_split.get_val(X_tensor, X_static_tensor, y_baseline_tensor, y_target_tensor)
 
 # make tensor data loaders
 train_dataloader = data_loading_wrappers.make_data_loader(*tensor_data_train, batch_size=batch_size)
@@ -119,6 +121,7 @@ transformer_dim_feedforward = transformer_input_dim * 4
 
 model = DeltaTimeAttentionVAE(
     input_dim=p,
+    patient_features_dim=p_static,
     n_timepoints=n_timepoints-1,
     vae_latent_dim=latent_dim,
     vae_input_to_latent_dim=64,
@@ -132,40 +135,10 @@ model = DeltaTimeAttentionVAE(
 ).to(device)
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
-
-batch = next(iter(train_dataloader))
-
-# ------------------ process input batch ------------------
-x, y_baseline = model.preprocess_input(batch)
-x.shape
-y_baseline.shape
-
-# ---------------------------- VAE ----------------------------
-# x_flat = x.view(-1, self.input_dim)  # (batch_size * max_measurements, input_dim)
-x_hat, mu, logvar = model.vae(x)
-x_hat.shape
-mu.shape
-logvar.shape
-
-# ------ concatenate with y0, positional encoding and projection ------
-h_time = model.make_transformer_input(x_hat, y_baseline)
-h_time.shape
-
-# ----------------------- Transformer ------------------------------
-h_out = model.transformer_module(h_time, attn_mask=model.causal_mask)
-h_out.shape
-
-# --------------------- Predict outcomes ---------------------
-y_hat = model.outcome_prediction(h_out)
-y_hat.shape
-
-# check attention weights
-attn_weights = model.get_attention_weights(tensor_data_train)
-attn_weights.shape
-
+count_parameters(model)
 
 # ----------- Training Loop -----------
-num_epochs = 200
+num_epochs = 500
 
 trainer = training_wrapper.Training(train_dataloader, val_dataloader)
 

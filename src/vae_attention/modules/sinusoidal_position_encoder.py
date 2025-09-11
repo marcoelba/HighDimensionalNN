@@ -37,9 +37,9 @@ class SinusoidalPositionalEncoding(nn.Module):
         self.register_buffer('pe', pe.unsqueeze(0)) # Shape: [1, max_len, d_model]
 
     def forward(self, x):
-        # x shape is [batch_size, seq_len, d_model]
+        # x shape is [batch_size, ..., seq_len, d_model]
         # We add a positional encoding for each position in the sequence
-        x = x + self.pe[:, :x.size(1), :]
+        x = x + self.pe[:, :x.size(-2), :]
         return x
 
 

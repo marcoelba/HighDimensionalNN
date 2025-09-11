@@ -34,6 +34,7 @@ class DeltaTimeAttentionVAE(nn.Module):
     def __init__(
         self,
         input_dim,
+        patient_features_dim,
         n_timepoints,
         vae_latent_dim,
         vae_input_to_latent_dim,
@@ -50,7 +51,7 @@ class DeltaTimeAttentionVAE(nn.Module):
         super(DeltaTimeAttentionVAE, self).__init__()
         
         # loss weights
-        self.beta = beta_vae
+        self.beta_vae = beta_vae
         self.reconstruction_weight = reconstruction_weight
         self.prediction_weight = prediction_weight
         # others
@@ -71,6 +72,11 @@ class DeltaTimeAttentionVAE(nn.Module):
             vae_input_to_latent_dim=vae_input_to_latent_dim,
             vae_latent_dim=vae_latent_dim,
             dropout=0.0
+        )
+
+        self.film_generator_nn = nn.Sequential(
+            nn.Linear(patient_features_dim, 2 * transformer_input_dim), # Outputs γ and β concatenated
+            # nn.GELU()
         )
 
         # ---- non-linear projection of [X, y_t0] to common input dimension -----
@@ -115,28 +121,36 @@ class DeltaTimeAttentionVAE(nn.Module):
         """
         # Input features
         x = batch[0]
-        y_baseline = batch[1]
+        patients_static_features = batch[1]
+        y_baseline = batch[2]
+
+        return x, y_baseline, patients_static_features
+
+    def film_generator(self, x, h_in):
+        film_params = self.film_generator_nn(x)
+        gamma, beta = torch.chunk(film_params, 2, dim=-1) # split in half and half
+        # the time dimension is always second last
+        num_middle_dims = h_in.dim() - gamma.dim() # number of middle dimensions
+
+        # Add the required number of singleton dimensions in the middle
+        if num_middle_dims > 0:
+            for _ in range(num_middle_dims):
+                gamma = gamma.unsqueeze(-2) # Keep adding at position 1
+                beta = beta.unsqueeze(-2)
         
-        return x, y_baseline
+        h_mod = gamma * h_in + beta
 
-    def make_transformer_input(self, x_hat, y0):
+        return h_mod
 
-        # --------------------- Add the lagged outcome y ----------------------
-        h = torch.cat([x_hat, y0], dim=-1)
+    def expand_input_in_time(self, h):
 
-        # --------------------- Expand the static features over the time dimension ---------------------
+        # Expand the static features over the time dimension
         time_dim = h.dim() - 1
         new_shape = list(h.shape)
         new_shape.insert(time_dim, self.n_timepoints)  # Insert T at the correct position
         h_exp = h.unsqueeze(time_dim).expand(new_shape)
 
-        # --------------- Projection to transformer input dimension -----------
-        h_in = self.projection_to_transformer(h_exp)
-
-        # --------------------- Time positional embedding ---------------------
-        h_time = self.pos_encoder(h_in)
-
-        return h_time
+        return h_exp
     
     def outcome_prediction(self, h):
         y_hat = self.fc_out(self.dropout(h)).squeeze(-1)  # [batch_size, ..., T]
@@ -144,16 +158,27 @@ class DeltaTimeAttentionVAE(nn.Module):
 
     def forward(self, batch):
         # ------------------ process input batch ------------------
-        x, y_baseline = self.preprocess_input(batch)
+        x, y_baseline, patients_static_features = self.preprocess_input(batch)
 
         # ---------------------------- VAE ----------------------------
         x_hat, mu, logvar = self.vae(x)
         
-        # ------ concatenate with y0, positional encoding and projection ------
-        h_time = self.make_transformer_input(x_hat, y_baseline)
+        # --------------------- Concat Static fatures ----------------------
+        h = torch.cat([x_hat, y_baseline], dim=-1)
+
+        # ------ positional encoding and projection ------
+        h_exp = self.expand_input_in_time(h)
+
+        # --------------- Projection to transformer input dimension -----------
+        h_in = self.projection_to_transformer(h_exp)
+
+        # -------- Generate FiLM parameters γ and β from static patient features --------
+        h_mod = self.film_generator(patients_static_features, h_in)
+
+        # --------------------- Time positional embedding ---------------------
+        h_time = self.pos_encoder(h_mod)
 
         # ----------------------- Transformer ------------------------------
-        # This custom Transformer module expects input with shape: [batch_size, seq_len, input_dim]
         h_out = self.transformer_module(h_time, attn_mask=self.causal_mask)
 
         # --------------------- Predict outcomes ---------------------
@@ -173,9 +198,9 @@ class DeltaTimeAttentionVAE(nn.Module):
         # KL divergence
         KLD = -0.5 * torch.sum(1 + m_out[3] - m_out[2].pow(2) - m_out[3].exp())
         # label prediction loss
-        PredMSE = nn.functional.mse_loss(m_out[1], batch[2], reduction='sum')
+        PredMSE = nn.functional.mse_loss(m_out[1], batch[3], reduction='sum')
 
-        return self.reconstruction_weight * BCE + self.beta * KLD + self.prediction_weight * PredMSE
+        return self.reconstruction_weight * BCE + self.beta_vae * KLD + self.prediction_weight * PredMSE
     
     def get_attention_weights(self, batch):
         """
@@ -194,13 +219,25 @@ class DeltaTimeAttentionVAE(nn.Module):
         """
         with torch.no_grad():
             # ------------------ process input batch ------------------
-            x, y_baseline = self.preprocess_input(batch)
+            x, y_baseline, patients_static_features = self.preprocess_input(batch)
 
             # ---------------------------- VAE ----------------------------
             x_hat, mu, logvar = self.vae(x)
             
-            # ------ concatenate with y0, positional encoding and projection ------
-            h_time = self.make_transformer_input(x_hat, y_baseline)
+            # --------------------- Concat Static fatures ----------------------
+            h = torch.cat([x_hat, y_baseline], dim=-1)
+
+            # ------ positional encoding and projection ------
+            h_exp = self.expand_input_in_time(h)
+
+            # --------------- Projection to transformer input dimension -----------
+            h_in = self.projection_to_transformer(h_exp)
+
+            # -------- Generate FiLM parameters γ and β from static patient features --------
+            h_mod = self.film_generator(patients_static_features, h_in)
+
+            # --------------------- Time positional embedding ---------------------
+            h_time = self.pos_encoder(h_mod)
 
             attn_weights = self.transformer_module.cross_attn.get_attention_weights(
                 h_time,
@@ -209,3 +246,82 @@ class DeltaTimeAttentionVAE(nn.Module):
             )
         
         return attn_weights
+
+
+if __name__ == "__main__":
+    import os
+    os.chdir("./src")
+
+    k = 5
+    n = 10
+    p = 6
+    p_static = 3
+    n_timepoints = 5
+    n_measurements = 4
+
+    X = torch.randn(n, n_measurements, p)
+    y = torch.randn(n, n_measurements, n_timepoints)
+    y0 = torch.randn(n, n_measurements, 1)
+    x_static = torch.randn(n, p_static)
+
+    X = torch.randn(n, p)
+    y = torch.randn(n, n_timepoints)
+    y0 = torch.randn(n, 1)
+    x_static = torch.randn(n, p_static)
+
+    model = DeltaTimeAttentionVAE(
+        input_dim=p,
+        patient_features_dim=p_static,
+        n_timepoints=n_timepoints,
+        vae_latent_dim=k,
+        vae_input_to_latent_dim=4,
+        max_len_position_enc=5,
+        transformer_input_dim=12,
+        transformer_dim_feedforward=8,
+        nheads=4,
+    )
+
+    batch = [
+        torch.tensor(X),
+        torch.tensor(y0),
+        torch.tensor(x_static),
+        torch.tensor(y)
+    ]
+
+    # ------------------ process input batch ------------------
+    x, y_baseline, patients_static_features = model.preprocess_input(batch)
+
+    # ---------------------------- VAE ----------------------------
+    x_hat, mu, logvar = model.vae(x)
+
+    # --------------------- Concat Static fatures ----------------------
+    h = torch.cat([x_hat, y_baseline], dim=-1)
+    h.shape
+
+    # ------ positional encoding and projection ------
+    h_exp = model.expand_input_in_time(h)
+    h_exp.shape
+
+    # --------------- Projection to transformer input dimension -----------
+    h_in = model.projection_to_transformer(h_exp)
+    h_in.shape
+
+    # -------- Generate FiLM parameters γ and β from static patient features --------
+    h_mod = model.film_generator(patients_static_features, h_in)
+    h_mod.shape
+
+    # --------------------- Time positional embedding ---------------------
+    h_time = model.pos_encoder(h_mod)
+    h_time.shape
+
+    # ----------------------- Transformer ------------------------------
+    h_out = model.transformer_module(h_time, attn_mask=model.causal_mask)
+    h_out.shape
+
+    # --------------------- Predict outcomes ---------------------
+    y_hat = model.outcome_prediction(h_out)
+    y_hat.shape
+
+    # att weights
+    ww = model.get_attention_weights(batch)
+    ww.shape
