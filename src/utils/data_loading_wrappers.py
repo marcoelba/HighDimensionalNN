@@ -76,9 +76,75 @@ class DataSplit:
         return data
 
 
-def make_data_loader(*arrays, batch_size = 32, device=torch.device("cpu")):
+def make_long_array(x, feature_dimensions=-1):
+    # join the first two dimensions, i.e., patient and measurement
+    x_shape = x.shape
+    x = x.reshape(-1, x_shape[feature_dimensions])
+
+    return x
+
+
+def sum_nan_on_given_dims(x, feature_dimensions):
+    return torch.isnan(x).sum(dim=feature_dimensions) if x.dim() > 1 else torch.isnan(x)
+
+
+class CustomDataset(Dataset):
+    def __init__(self, *arrays, reshape=False, remove_missing=True, feature_dimensions=-1, device=torch.device("cpu")):
+        """
+        Args:
+        """
+        self.device = device
+
+        self.original_shapes = [arr.shape for arr in arrays]
+
+        if reshape:
+            arrays = [make_long_array(arr, feature_dimensions) for arr in arrays]
+        
+        # check for missing data
+        is_missing = False
+        for arr in arrays:
+            if torch.isnan(arr)[:, ...].any():
+                is_missing = True
+
+        if is_missing:
+            missing_idx = [sum_nan_on_given_dims(arr, feature_dimensions) for arr in arrays]
+
+        # collect all missing indeces
+        all_missing_idx = torch.stack(missing_idx, axis=1).sum(axis=1) > 0
+        # filter out missing
+        if remove_missing:
+            arrays = [arr[~all_missing_idx, ...] for arr in arrays]
+        
+        self.new_shapes = [arr.shape for arr in arrays]
+        self.arrays = arrays
+
+        print("Input Tensors Shapes: ", self.original_shapes)
+        print("New Tensors Shapes: ", self.new_shapes)
+
+    def __len__(self):
+        return len(self.arrays[0])
+
+    def __getitem__(self, idx):
+        return tuple(array[idx] for array in self.arrays)
+
+
+def make_data_loader(
+    *arrays,
+    batch_size = 32,
+    feature_dimensions=-1,
+    reshape=False,
+    drop_missing=True,
+    device=torch.device("cpu")
+):
     # Initialize datasets
-    dataset = TensorDataset(*arrays)
+
+    dataset = CustomDataset(
+        *arrays,
+        reshape=reshape,
+        remove_missing=drop_missing,
+        feature_dimensions=feature_dimensions,
+        device=device
+    )
 
     loader = DataLoader(
         dataset, batch_size=batch_size, shuffle=True
@@ -86,124 +152,9 @@ def make_data_loader(*arrays, batch_size = 32, device=torch.device("cpu")):
 
     return loader
 
-
-class LongitudinalDataset(Dataset):
-    def __init__(self, X_long, y_long, measurement_ids, time_steps, device=torch.device("cpu")):
-        """
-        Args:
-            X_long: (n_samples, p) - Features in long format (may contain NaNs)
-            y_long: (n_samples, T) - Torch tensor, Outcomes in long format (may contain NaNs)
-            measurement_ids: (n_samples,) - IDs for measurement types (0 to M-1)
-            time_steps: Number of time points (T)
-        """
-        self.device = device
-
-        self.X = torch.from_numpy(X_long).float()
-        self.y = torch.from_numpy(y_long).float()
-        self.measurement_ids = torch.from_numpy(measurement_ids).long()
-        self.time_steps = time_steps
-        
-        # Masks for observed data
-        self.X_mask = ~torch.isnan(self.X[:, 0])  # (n_samples,)
-        self.y_mask = ~torch.isnan(self.y[:, 0])   # (n_samples,)
-        
-        # Replace NaNs with 0 (will be masked)
-        self.X[torch.isnan(self.X)] = 0
-        self.y[torch.isnan(self.y)] = 0
-
-        self.X.to(device)
-        self.y.to(device)
-        self.X_mask.to(device)
-        self.y_mask.to(device)
-        self.measurement_ids.to(device)
-
-    def __len__(self):
-        return len(self.X)
-
-    def __getitem__(self, idx):
-        return {
-            'X': self.X[idx],
-            'y': self.y[idx],
-            'measurement_id': self.measurement_ids[idx],
-            'X_mask': self.X_mask[idx],  # 1=observed, 0=missing
-            'y_mask': self.y_mask[idx]    # 1=observed, 0=missing
-        }
-
-
-def collate_fn(batch):
-    # Stack all items in the batch
-    X = torch.stack([item['X'] for item in batch])
-    y = torch.stack([item['y'] for item in batch])
-    measurement_ids = torch.stack([item['measurement_id'] for item in batch])
-    X_mask = torch.stack([item['X_mask'] for item in batch])
-    y_mask = torch.stack([item['y_mask'] for item in batch])
-    
-    return {
-        'X': X,
-        'y': y,
-        'measurement_ids': measurement_ids,
-        'X_mask': X_mask,
-        'y_mask': y_mask
-    }
-
-
-def make_longitudinal_data_loader(X_long, y_long, measurement_ids, n_timepoints, batch_size = 32):
-    # Initialize datasets
-    dataset = LongitudinalDataset(X_long, y_long, measurement_ids, time_steps=n_timepoints)
-    loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=collate_fn)
-
-    return loader
-
-
-class Training:
-    def __init__(self, train_dataloader, val_dataloader=None):
-
-        self.losses = dict()
-        
-        self.validation = (val_dataloader is not None)
-        self.train_dataloader = train_dataloader
-        self.len_train = len(train_dataloader.dataset)
-        self.losses["train"] = []
-
-        if self.validation:
-            self.val_dataloader = val_dataloader
-            self.len_val = len(val_dataloader.dataset)
-            self.losses["val"] = []
-        else:
-            self.losses["val"] = None
-
-    def training_loop(self, model, optimizer, num_epochs):
-
-        for epoch in range(num_epochs):
-            model.train()
-            train_loss = 0
-
-            # beta = c_annealer.get_beta(epoch) * model.beta
-
-            for batch_data in self.train_dataloader:
-                optimizer.zero_grad()
-                
-                model_output = model(batch_data)
-                loss = model.loss(model_output, batch_data)
-                
-                loss.backward()
-                train_loss += loss.item()
-                optimizer.step()
-            
-            self.losses["train"].append(train_loss / self.len_train)
-            print(f'Epoch {epoch+1}, Loss: {train_loss / self.len_train:.4f}')
-            
-            if self.validation:
-                val_loss = 0
-                with torch.no_grad():
-                    for batch_data in self.val_dataloader:
-                        
-                        model_output = model(batch_data)
-                        loss = model.loss(model_output, batch_data)
-                        
-                        val_loss += loss.item()
-                self.losses["val"].append(val_loss / self.len_val)
-                print(f'Epoch {epoch+1}, Validation Loss: {val_loss / self.len_val:.4f}')
+# arrays = tensor_data_train
+# ddd = make_data_loader(*tensor_data_train, reshape=True, drop_missing=True)
+# [dd.shape for dd in next(iter(ddd))]
 
 
 class KLAnnealer:

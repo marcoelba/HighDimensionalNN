@@ -87,7 +87,8 @@ def multi_longitudinal_data_generation(
     p_interventions=0,
     noise_scale = 0.5,
     W=None,
-    beta=None, beta_time=None, beta_static=None, beta_interventions=None
+    beta=None, beta_time=None, beta_static=None, beta_interventions=None,
+    missing_prob=0.0
 ):
     """
     Generate synthetic multi-dimensional longitudinal data with latent structure.
@@ -134,7 +135,8 @@ def multi_longitudinal_data_generation(
         Coefficients for intervention covariates of shape (n_measurements, p_interventions).
         If None, randomly initialized with values in {-1, 1}.
         Only used if p_interventions > 0.
-    
+    missing_prob : float = 0
+        If > 0 introduces random missing values in the arrays for whole measurements
     Returns
     -------
     y_time : ndarray
@@ -216,6 +218,8 @@ def multi_longitudinal_data_generation(
     # Static patient level features, like clinical anthropometrics
     if p_static > 0:
         X_static = np.random.normal(scale=1., size=(n, p_static))
+        # expand over M dimension
+        X_static = np.repeat(np.expand_dims(X_static, axis=1), n_measurements, axis=1)
         if beta_static is None:
             beta_static = np.random.choice([-1, 1], size=p_static)
         out_dict["X_static"] = X_static
@@ -241,7 +245,7 @@ def multi_longitudinal_data_generation(
     if p_static > 0:
         for m in range(n_measurements):
             for t in range(n_timepoints):
-                lin_pred[:, m, t] = lin_pred[:, m, t] + X_static @ beta_static
+                lin_pred[:, m, t] = lin_pred[:, m, t] + X_static[:, m, :] @ beta_static
 
     # Add static patient effects if present
     if p_interventions > 0:
@@ -257,5 +261,14 @@ def multi_longitudinal_data_generation(
 
     y_time = y_time + np.random.normal(scale=noise_scale, size=y_time.shape)
     out_dict["y"] = y_time
+
+    # add missing values (nan) if required
+    if missing_prob > 0:
+        mask = np.random.binomial(1, 1 - missing_prob, size=(n, n_measurements)) # n x M
+        # apply to X
+        for m in range(n_measurements):
+            out_dict["X"][mask[:, m] == 0, m, :] = np.nan
+            out_dict["X_static"][mask[:, m] == 0, m, :] = np.nan
+            out_dict["y"][mask[:, m] == 0, m, :] = np.nan
 
     return out_dict

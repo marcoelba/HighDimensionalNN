@@ -3,11 +3,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from utils.decorator import compose_docstring
+from src.utils.decorator import compose_docstring
 
-from vae_attention.modules.transformer import TransformerEncoderLayerWithWeights
-from vae_attention.modules.sinusoidal_position_encoder import SinusoidalPositionalEncoding
-from vae_attention.modules.vae import VAE
+from src.vae_attention.modules.transformer import TransformerEncoderLayerWithWeights
+from src.vae_attention.modules.sinusoidal_position_encoder import SinusoidalPositionalEncoding
+from src.vae_attention.modules.vae import VAE
 
 
 @compose_docstring(VAE, SinusoidalPositionalEncoding, TransformerEncoderLayerWithWeights)
@@ -264,10 +264,23 @@ if __name__ == "__main__":
     y0 = torch.randn(n, n_measurements, 1)
     x_static = torch.randn(n, p_static)
 
-    X = torch.randn(n, p)
-    y = torch.randn(n, n_timepoints)
-    y0 = torch.randn(n, 1)
-    x_static = torch.randn(n, p_static)
+    # introduce some nan
+    X[0, [0, 2], :] = torch.nan
+    X[3, 1, :] = torch.nan
+    X[9, 3, :] = torch.nan
+
+    y[0, [0, 2], :] = torch.nan
+    y[3, 1, :] = torch.nan
+    y[9, 3, :] = torch.nan
+
+    y0[0, [0, 2], :] = torch.nan
+    y0[3, 1, :] = torch.nan
+    y0[9, 3, :] = torch.nan
+
+    # X = torch.randn(n, p)
+    # y = torch.randn(n, n_timepoints)
+    # y0 = torch.randn(n, 1)
+    # x_static = torch.randn(n, p_static)
 
     model = DeltaTimeAttentionVAE(
         input_dim=p,
@@ -287,10 +300,13 @@ if __name__ == "__main__":
         torch.tensor(x_static),
         torch.tensor(y)
     ]
+    torch.isnan(y).any()
 
     # ------------------ process input batch ------------------
     x, y_baseline, patients_static_features = model.preprocess_input(batch)
-
+    mask = ~torch.isnan(x)
+    x[mask]
+    
     # ---------------------------- VAE ----------------------------
     x_hat, mu, logvar = model.vae(x)
 
