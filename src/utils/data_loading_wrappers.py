@@ -108,11 +108,11 @@ class CustomDataset(Dataset):
 
         if is_missing:
             missing_idx = [sum_nan_on_given_dims(arr, feature_dimensions) for arr in arrays]
-
-        # collect all missing indeces
-        all_missing_idx = torch.stack(missing_idx, axis=1).sum(axis=1) > 0
+            # collect all missing indeces
+            all_missing_idx = torch.stack(missing_idx, axis=1).sum(axis=1) > 0
+        
         # filter out missing
-        if remove_missing:
+        if remove_missing & is_missing:
             arrays = [arr[~all_missing_idx, ...] for arr in arrays]
         
         self.new_shapes = [arr.shape for arr in arrays]
@@ -151,10 +151,6 @@ def make_data_loader(
     )
 
     return loader
-
-# arrays = tensor_data_train
-# ddd = make_data_loader(*tensor_data_train, reshape=True, drop_missing=True)
-# [dd.shape for dd in next(iter(ddd))]
 
 
 class KLAnnealer:

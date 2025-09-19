@@ -146,7 +146,7 @@ def convert_to_longitudinal_multidim_array(
         print(result_array[i, 0, :, :])
         print()
 
-    if len(cols_to_extract) == 1:
-        result_array = result_array[..., 0]
+    # if len(cols_to_extract) == 1:
+    #     result_array = result_array[..., 0]
     
     return result_array

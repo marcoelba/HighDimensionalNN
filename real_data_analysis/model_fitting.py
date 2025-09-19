@@ -2,19 +2,25 @@
 import numpy as np
 import pandas as pd
 import torch
+import torch.optim as optim
+import pickle
 
 import os
 os.chdir("./")
 
 from real_data_analysis.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
+from real_data_analysis.features_preprocessing import preprocess
 
 from src.utils import training_wrapper
 from src.utils import data_loading_wrappers
-from src.utils.model_output_details import count_parameters
-from src.utils import plots
+# from src.utils import plots
 
 from src.vae_attention.full_model import DeltaTimeAttentionVAE
 
+
+# Create directory for results
+PATH_MODELS = "./res"
+os.makedirs("res", exist_ok = True)
 
 # --------------------------------------------------------
 # -------------- Script Parameters --------------
@@ -40,10 +46,12 @@ PATIENT_COLS = [COL_SEX, COL_AGE, COL_BMI]
 
 # script parameters
 SAVE_MODELS = True
-PATH_MODELS = "./"
 N_FOLDS = 10
 BATCH_SIZE = 50
+BATCH_SIZE_VAL = None
 NUM_EPOCHS = 500
+DEVICE = torch.device("cpu")
+
 
 # model params
 LATENT_DIM = 10
@@ -63,6 +71,12 @@ df_gene_names = pd.read_csv(PATH_TO_GENE_NAMES, header=0, sep=";")
 
 # convert genomics data to array
 genes_cols = df_gene_names['column_names'].tolist()
+
+# add gene columns to preprocessing dictionary
+features_to_preprocess = dict()
+features_to_preprocess["X"] = {k: v for v, k in enumerate(genes_cols)}
+features_to_preprocess["X_static"] = dict(COL_AGE=1, COL_BMI=2)
+
 print("\n-------------------------------")
 print("\nExtraction of gene data")
 print("\n-------------------------------")
@@ -111,9 +125,9 @@ y = convert_to_longitudinal_multidim_array(
 print("\nOutcome y extracted!")
 print(y.shape)
 
-n_individuals, n_measurements, n_timepoints = y.shape
-p = X.shape[1]
-p_static = X_static.shape[1]
+n_individuals, n_measurements, n_timepoints, _ = y.shape
+p = X.shape[-1]
+p_static = X_static.shape[-1]
 
 print("Dimensions:")
 print("n_individuals: ", n_individuals)
@@ -123,34 +137,26 @@ print("p: ", p)
 print("p_static: ", p_static)
 
 # y0 (y at baseline) is actually an additional feature, because it is measured before any intervention
-print(y.shape)
-y_baseline = y[:, :, 0:1]
-print(y_baseline.shape)
+y_baseline = y[:, :, 0:1, :]
+print("Baseline: ", y_baseline.shape)
 # the actual target is then y from t=1
-y_target = y[:, :, 1:]
-print(y_target.shape)
+y_target = y[:, :, 1:, :]
+print("Target: ", y_target.shape)
+
+# Add preproc info
+features_to_preprocess["y_baseline"] = dict(COL_OUTCOME=0)
+features_to_preprocess["y_target"] = dict(COL_OUTCOME=0)
+
 
 n_timepoints = n_timepoints - 1
 print("n_timepoints withOUT baseline: ", n_timepoints)
 
-# get tensors
-X_tensor = torch.FloatTensor(X).to(torch.device("cpu"))
-X_static_tensor = torch.FloatTensor(X_static).to(torch.device("cpu"))
-y_target_tensor = torch.FloatTensor(y_target).to(torch.device("cpu"))
-y_baseline_tensor = torch.FloatTensor(y_baseline).to(torch.device("cpu"))
-print("\n Tensors created")
-
-# make list of tensors
-tensor_data_train = [
-    X_tensor,
-    X_static_tensor,
-    y_baseline_tensor,
-    y_target_tensor
-]
-
-# make tensor data loaders
-reshape = True
-drop_missing = True
+dict_arrays = dict(
+    X=X,
+    X_static=X_static,
+    y_baseline=y_baseline,
+    y_target=y_target
+)
 
 # ------------- k-fold Cross-Validation -------------
 all_train_losses = []
@@ -158,46 +164,63 @@ all_val_losses = []
 all_predictions = []
 all_true = []
 all_models = []
+all_best_epochs = []
 
 train_indices = np.random.permutation(np.arange(0, n_individuals))
-
 # Split into k folds
 folds = np.array_split(train_indices, N_FOLDS)
 
 for fold in range(N_FOLDS):
     print(f"Running k-fold validation on fold {fold+1} of {N_FOLDS}")
 
-    train_mask = torch.ones(n_individuals, dtype=torch.bool)
+    # mask current fold for use in validation
+    train_mask = np.ones(n_individuals, dtype=int)
     train_mask[folds[fold]] = False
 
-    # make train and validation data loader for the k-fold cross-validation
-    tensor_train_loo = [
-        tensor_data_train[0][train_mask],
-        tensor_data_train[1][train_mask]
-    ]
-    tensor_val_loo = [
-        tensor_data_train[0][~train_mask],
-        tensor_data_train[1][~train_mask],
-    ]
+    # Split
+    dict_train = {name: arr[train_mask == 1] for name, arr in dict_arrays.items()}
+    dict_val = {name: arr[train_mask == 0] for name, arr in dict_arrays.items()}
+
+    # train and apply feature preprocessing
+    dict_train_preproc, dict_val_preproc, scalers = preprocess(dict_train, dict_val, features_to_preprocess)
+
+    # remove last dimension for outcome with only one dimension
+    if dict_train_preproc["y_target"].shape[-1] == 1:
+        dict_train_preproc["y_target"] = dict_train_preproc["y_target"][..., 0]
+        dict_val_preproc["y_target"] = dict_val_preproc["y_target"][..., 0]
+        dict_train_preproc["y_baseline"] = dict_train_preproc["y_baseline"][..., 0]
+        dict_val_preproc["y_baseline"] = dict_val_preproc["y_baseline"][..., 0]
+
+    # get tensors
+    tensor_data_train = [torch.FloatTensor(array).to(DEVICE) for key, array in dict_train_preproc.items()]
+    tensor_data_val = [torch.FloatTensor(array).to(DEVICE) for key, array in dict_val_preproc.items()]
+
+    # Validation batch size - just do one
+    y_val_shape = dict_val_preproc["y_target"].shape
+    BATCH_SIZE_VAL = y_val_shape[0] * y_val_shape[1]
+
+    # Train batch size
+    y_train_shape = dict_train_preproc["y_target"].shape
+    print("y_train_shape: ", y_train_shape[0] * y_train_shape[1])
+    # BATCH_SIZE_TRAIN = y_train_shape[0] * y_train_shape[1]
+
     # data loaders
     train_dataloader = data_loading_wrappers.make_data_loader(
-        *tensor_train_loo,
+        *tensor_data_train,
         batch_size=BATCH_SIZE,
         feature_dimensions=-1,
-        reshape=reshape,
-        drop_missing=drop_missing
+        reshape=True,
+        drop_missing=True
     )
     val_dataloader = data_loading_wrappers.make_data_loader(
-        *tensor_val_loo,
-        batch_size=1,
+        *tensor_data_val,
+        batch_size=BATCH_SIZE_VAL,
         feature_dimensions=-1,
-        reshape=reshape,
-        drop_missing=drop_missing
+        reshape=True,
+        drop_missing=True
     )
 
     # ---------------------- Model Setup ----------------------
-    device = torch.device("cpu")
-
     model = DeltaTimeAttentionVAE(
         input_dim=p,
         patient_features_dim=p_static,
@@ -211,7 +234,7 @@ for fold in range(N_FOLDS):
         dropout=0.1,
         dropout_attention=0.1,
         prediction_weight=1.0
-    ).to(device)
+    ).to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
     # Training Loop
@@ -222,25 +245,49 @@ for fold in range(N_FOLDS):
     model.load_state_dict(trainer.best_model.state_dict())
 
     # save model?
-    if save_models:
-        PATH = f"{PATH_MODELS}\model_{fold}"
+    if SAVE_MODELS:
+        PATH = f"{PATH_MODELS}/model_{fold}"
         torch.save(model.state_dict(), PATH)
 
     all_models.append(model)
-    
+    all_best_epochs.append(trainer.best_iteration)
+
     # Validate
     model.eval()
     with torch.no_grad():
-        pred = model(tensor_val_loo)
-        all_predictions.append(pred.numpy())
-        all_true.append(tensor_val_loo[1].numpy())
+        pred = model(tensor_data_val)
+        all_predictions.append(pred[1].numpy())
+        all_true.append(tensor_data_val[3].numpy())
     
     # store
     all_train_losses.append(np.min(trainer.losses["train"]))
     all_val_losses.append(np.min(trainer.losses["val"]))
 
+#
+print("\n ---------------------------------------")
+print(" ---------- Training finished ----------")
+print(" ---------------------------------------")
+
+print("\n")
+print("Best epochs: ", all_best_epochs)
 
 predictions = np.concatenate(all_predictions, axis=0)
 predictions.shape
 ground_truth = np.concatenate(all_true, axis=0)
 ground_truth.shape
+
+# save to pickle files
+with open(f"{PATH_MODELS}/predictions", "wb") as fp:   # Pickling predictions
+    pickle.dump(predictions, fp)
+with open(f"{PATH_MODELS}/ground_truth", "wb") as fp:   # Pickling ground truth
+    pickle.dump(ground_truth, fp)
+with open(f"{PATH_MODELS}/best_epochs", "wb") as fp:   #Pickling best epochs
+    pickle.dump(all_best_epochs, fp)
+with open(f"{PATH_MODELS}/all_train_losses", "wb") as fp:   #Pickling train losses
+    pickle.dump(all_train_losses, fp)
+with open(f"{PATH_MODELS}/all_val_losses", "wb") as fp:   #Pickling val losses
+    pickle.dump(all_val_losses, fp)
+
+print("\n ---------------------------------------")
+print(" ---------- Script finished ----------")
+print(" ---------------------------------------")

@@ -26,6 +26,7 @@ class Training:
 
         self.best_val_loss = float('inf')
         self.best_model = None
+        self.best_iteration = None
     
     def add_gradient_noise(self, model, noise_std=0.01):
         """
@@ -66,7 +67,8 @@ class Training:
 
             
             self.losses["train"].append(train_loss / self.len_train)
-            print(f'Epoch {epoch+1}, Loss: {train_loss / self.len_train:.4f}')
+            if (epoch % 10) == 0:
+                print(f'Epoch {epoch+1}, Loss: {train_loss / self.len_train:.4f}')
             
             if self.validation:
                 model.eval()
@@ -79,9 +81,11 @@ class Training:
 
                         val_loss += loss.item()
                 self.losses["val"].append(val_loss / self.len_val)
-                print(f'Epoch {epoch+1}, Validation Loss: {val_loss / self.len_val:.4f}')
+                if (epoch % 10) == 0:
+                    print(f'Epoch {epoch+1}, Validation Loss: {val_loss / self.len_val:.4f}')
             
                 # save best model
                 if val_loss < self.best_val_loss:
                     self.best_val_loss = val_loss
                     self.best_model = copy.deepcopy(model)
+                    self.best_iteration = epoch
