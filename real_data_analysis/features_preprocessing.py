@@ -75,3 +75,52 @@ def preprocess(dict_train: dict, dict_val: dict, features_to_preprocess: dict):
             dict_val_preproc[key] = val_array
     
     return dict_train_preproc, dict_val_preproc, scalers
+
+
+def preprocess_transform(dict_new_data: dict, scalers: dict, features_to_preprocess: dict):
+    """
+    Preprocess new data using the already trained scalers
+    
+    Parameters
+    ----------
+    dict_new_data : dict of ndarray
+        Training array of shape (n_samples, n_meals, n_features)
+    features_to_preprocess : dict
+        Dictionary with array name as key and list of features as value
+    """
+    
+    all_arrays_keys = dict_new_data.keys()
+    dict_val_preproc = dict()
+
+    for key in all_arrays_keys:
+
+        val_array = dict_new_data[key]
+
+        if key in features_to_preprocess:
+
+            dict_features_index = features_to_preprocess[key]                        
+            n_features = val_array.shape[-1]
+            val_array_flat = val_array.reshape(-1, n_features)
+
+            # Process features
+            for idx in dict_features_index.values():
+                # Extract the feature column
+                val_feature = val_array_flat[:, idx]
+
+                # Remove NaN values for fitting
+                val_feature_no_nan = val_feature[~np.isnan(val_feature)]
+                
+                if len(val_feature_no_nan) > 0:                    
+                    # Transform validation
+                    val_array_flat[~np.isnan(val_feature), idx] = scalers[key][idx].transform(
+                        val_feature_no_nan.reshape(-1, 1)
+                    ).flatten()
+            
+            # Reshape back to original shape
+            val_processed = val_array_flat.reshape(val_array.shape)
+            dict_val_preproc[key] = val_processed
+
+        else:
+            dict_val_preproc[key] = val_array
+    
+    return dict_val_preproc

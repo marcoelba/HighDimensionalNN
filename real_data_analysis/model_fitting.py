@@ -4,16 +4,14 @@ import pandas as pd
 import torch
 import torch.optim as optim
 import pickle
-
 import os
-os.chdir("./")
+# os.chdir("./")
 
 from real_data_analysis.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
-from real_data_analysis.features_preprocessing import preprocess
+from real_data_analysis.features_preprocessing import preprocess, preprocess_transform
 
 from src.utils import training_wrapper
 from src.utils import data_loading_wrappers
-# from src.utils import plots
 
 from src.vae_attention.full_model import DeltaTimeAttentionVAE
 
@@ -44,12 +42,14 @@ COL_AGE = "Age"
 COL_BMI = "BMI"
 PATIENT_COLS = [COL_SEX, COL_AGE, COL_BMI]
 
+FEATURES_KEYS = ["X", "X_static", "y_baseline"]
+
 # script parameters
 SAVE_MODELS = True
-N_FOLDS = 10
+N_FOLDS = 2
 BATCH_SIZE = 50
 BATCH_SIZE_VAL = None
-NUM_EPOCHS = 500
+NUM_EPOCHS = 10
 DEVICE = torch.device("cpu")
 
 
@@ -71,6 +71,12 @@ df_gene_names = pd.read_csv(PATH_TO_GENE_NAMES, header=0, sep=";")
 
 # convert genomics data to array
 genes_cols = df_gene_names['column_names'].tolist()
+
+# dictionary with all feature columns
+features = dict()
+features["X"] = {k: v for v, k in enumerate(genes_cols)}
+features["X_static"] = {k: v for v, k in enumerate(PATIENT_COLS)}
+features["y_baseline"] = {"y_baseline": 0}
 
 # add gene columns to preprocessing dictionary
 features_to_preprocess = dict()
@@ -120,7 +126,8 @@ y = convert_to_longitudinal_multidim_array(
     visit_col=COL_VISIT,
     meal_col=COL_MEAL,
     time_index_col=COL_TIME,
-    cols_to_extract=[COL_OUTCOME]
+    cols_to_extract=[COL_OUTCOME],
+    transform=[np.log]
 )
 print("\nOutcome y extracted!")
 print(y.shape)
@@ -147,7 +154,6 @@ print("Target: ", y_target.shape)
 features_to_preprocess["y_baseline"] = dict(COL_OUTCOME=0)
 features_to_preprocess["y_target"] = dict(COL_OUTCOME=0)
 
-
 n_timepoints = n_timepoints - 1
 print("n_timepoints withOUT baseline: ", n_timepoints)
 
@@ -165,6 +171,7 @@ all_predictions = []
 all_true = []
 all_models = []
 all_best_epochs = []
+all_scalers = []
 
 train_indices = np.random.permutation(np.arange(0, n_individuals))
 # Split into k folds
@@ -183,7 +190,8 @@ for fold in range(N_FOLDS):
 
     # train and apply feature preprocessing
     dict_train_preproc, dict_val_preproc, scalers = preprocess(dict_train, dict_val, features_to_preprocess)
-
+    all_scalers.append(scalers)
+    
     # remove last dimension for outcome with only one dimension
     if dict_train_preproc["y_target"].shape[-1] == 1:
         dict_train_preproc["y_target"] = dict_train_preproc["y_target"][..., 0]
@@ -281,13 +289,57 @@ with open(f"{PATH_MODELS}/predictions", "wb") as fp:   # Pickling predictions
     pickle.dump(predictions, fp)
 with open(f"{PATH_MODELS}/ground_truth", "wb") as fp:   # Pickling ground truth
     pickle.dump(ground_truth, fp)
-with open(f"{PATH_MODELS}/best_epochs", "wb") as fp:   #Pickling best epochs
+with open(f"{PATH_MODELS}/best_epochs", "wb") as fp:   # Pickling best epochs
     pickle.dump(all_best_epochs, fp)
-with open(f"{PATH_MODELS}/all_train_losses", "wb") as fp:   #Pickling train losses
+with open(f"{PATH_MODELS}/all_train_losses", "wb") as fp:   # Pickling train losses
     pickle.dump(all_train_losses, fp)
-with open(f"{PATH_MODELS}/all_val_losses", "wb") as fp:   #Pickling val losses
+with open(f"{PATH_MODELS}/all_val_losses", "wb") as fp:   # Pickling val losses
     pickle.dump(all_val_losses, fp)
+with open(f"{PATH_MODELS}/all_scalers", "wb") as fp:   # Pickling scalers
+    pickle.dump(all_scalers, fp)
 
 print("\n ---------------------------------------")
 print(" ---------- Script finished ----------")
 print(" ---------------------------------------")
+
+
+def ensemble_predict(x):
+    # This list will hold the predictions from each (model, scaler) pair
+    all_predictions = []
+
+    for fold in range(N_FOLDS):
+        print(f"Running k-fold validation on fold {fold+1} of {N_FOLDS}")
+        # apply feature preprocessing
+        dict_arrays_preproc = preprocess_transform(
+            dict_arrays, all_scalers[fold], features_to_preprocess
+        )
+        # remove last dimension for outcome with only one dimension
+        if dict_arrays_preproc["y_target"].shape[-1] == 1:
+            dict_arrays_preproc["y_target"] = dict_arrays_preproc["y_target"][..., 0]
+            dict_arrays_preproc["y_baseline"] = dict_arrays_preproc["y_baseline"][..., 0]
+
+        # keep only input features and get tensors
+        tensor_data = [
+            torch.FloatTensor(array).to(DEVICE) for key, array in dict_arrays_preproc.items() if key in FEATURES_KEYS
+        ]
+        # make longitudinal
+        tensor_dataset = data_loading_wrappers.CustomDataset(
+            *tensor_data,
+            reshape=True,
+            remove_missing=True,
+            feature_dimensions=-1,
+            device=DEVICE
+        )
+        tensor_input = tensor_dataset.arrays
+        # fold-model prediction
+        model = all_models[fold]
+        model.eval()
+        with torch.no_grad():
+            prediction = model(tensor_input)
+            all_predictions.append(prediction[1].numpy())  # here only y_pred
+
+    # Stack predictions and compute mean along the ensemble axis
+    predictions = np.array(all_predictions)
+    ensemble_mean = np.mean(predictions, axis=0)
+
+    return ensemble_mean

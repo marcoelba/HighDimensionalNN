@@ -14,7 +14,7 @@ for id_num in ids:
     for visit in visits:
         meal = meals[visit - 1]
         for time in [0, 1, 2]:  # Only 2 time points in main df
-            a = np.random.randint(10, 100)
+            a = np.random.randint(1, 10)
             b = np.random.uniform(0, 1)
             c = np.random.uniform(0, 1)
             tg = np.random.randn() + 2

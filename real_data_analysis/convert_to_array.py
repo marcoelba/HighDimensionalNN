@@ -79,7 +79,8 @@ def convert_to_longitudinal_multidim_array(
     visit_col: str,
     meal_col: str,
     time_index_col: str,
-    cols_to_extract: list
+    cols_to_extract: list,
+    transform: list=None
 ):
     """
     Convert a longitudinal DataFrame to multi-dimensional arrays for analysis,
@@ -99,7 +100,9 @@ def convert_to_longitudinal_multidim_array(
         Column name for time points
     cols_to_extract : list
         List of column names for covariates/features
-        
+    transform : list
+        List of function to apply transformation to columns, e.g. log()
+    
     Returns
     -------
     X : ndarray
@@ -117,6 +120,9 @@ def convert_to_longitudinal_multidim_array(
     n_timepoints = len(unique_times)
     n_features = len(cols_to_extract)
 
+    if transform is None:
+        transform = [None for ii in cols_to_extract]
+
     # Initialize the array with NaN values
     result_array = np.full((n_subjects, n_meals, n_timepoints, n_features), np.nan)
 
@@ -132,20 +138,16 @@ def convert_to_longitudinal_multidim_array(
         time_idx = time_to_idx[row[time_index_col]]
         
         for cov_idx, cov in enumerate(cols_to_extract):
-            result_array[id_idx, meal_idx, time_idx, cov_idx] = row[cov]
+            if transform[cov_idx] is not None:
+                result_array[id_idx, meal_idx, time_idx, cov_idx] = transform[cov_idx](row[cov])
+            else:
+                result_array[id_idx, meal_idx, time_idx, cov_idx] = row[cov]
 
     print("Original DataFrame:")
     print(df.head())
     print(f"\nResult array shape: {result_array.shape}")
     print(f"Dimensions: {n_subjects} subjects × {n_meals} meals × {n_timepoints} timepoints × {n_features} features")
     
-    # Print a sample of the array
-    print("\nSample of result array (first 2 subjects, first meal, all timepoints):")
-    for i in range(min(2, n_subjects)):
-        print(f"Subject {i}:")
-        print(result_array[i, 0, :, :])
-        print()
-
     # if len(cols_to_extract) == 1:
     #     result_array = result_array[..., 0]
     
