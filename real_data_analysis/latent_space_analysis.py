@@ -1,11 +1,12 @@
-# SHAP explanations
-import pickle
+# VAE analysis
 import os
+import pickle
 
-import shap
 import torch
+import torch.nn as nn
 import pandas as pd
 import numpy as np
+from scipy.stats import pearsonr
 
 from src.vae_attention.full_model import DeltaTimeAttentionVAE
 from real_data_analysis.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
@@ -157,7 +158,6 @@ dict_arrays = dict(
 with open(f"{PATH_MODELS}/all_scalers", "rb") as fp:   # Pickling scalers
     all_scalers = pickle.load(fp)
 
-# Load torch models
 all_models = []
 for fold in range(N_FOLDS):
     print(f"Loading model fold {fold+1} of {N_FOLDS}")
@@ -181,87 +181,122 @@ for fold in range(N_FOLDS):
     all_models.append(model)
 
 
-# Define a Torch ensemble model that takes in input a list of models
-class EnsembleModel(torch.nn.Module):
-    def __init__(self, model_list):
-        super(EnsembleModel, self).__init__()
-        self.models = torch.nn.ModuleList(model_list)
-        
-    def forward(self, x):
-        """
-        Args:
-            x: torch tensor array with ALL features concatenated
-        """
-        # Transform input back to a list of tensors
-        tensors_list = []
-        start_s = 0
-        end_s = 0
-        for ii, key in enumerate(FEATURES_KEYS):
-            n_feat = len(features[key].values())
-            end_s += n_feat
-            tensors_list.append(x[:, start_s:end_s])
-            start_s += n_feat
-        # x is expected to be already properly scaled
-        outputs = [model(tensors_list)[1] for model in self.models]
-        return torch.stack(outputs).mean(dim=0)
+# LOSS components
+all_correlations = []
 
+for fold in range(N_FOLDS):
+    # apply feature preprocessing
+    dict_arrays_preproc = preprocess_transform(
+        dict_arrays, all_scalers[fold], features_to_preprocess
+    )
+    # remove last dimension for outcome with only one dimension
+    if dict_arrays_preproc["y_target"].shape[-1] == 1:
+        dict_arrays_preproc["y_target"] = dict_arrays_preproc["y_target"][..., 0]
+        dict_arrays_preproc["y_baseline"] = dict_arrays_preproc["y_baseline"][..., 0]
 
-# SHAP needs as input a single numpy array with the features
-# pre-process the input data with all folds scalers at once
-def prepare_data_for_shap(dict_shap, subsample=False, n_background=100):
-    tensor_input_per_fold = []
+    # keep only input features and get tensors
+    tensor_data = [
+        torch.FloatTensor(array).to(DEVICE) for key, array in dict_arrays_preproc.items()
+    ]
+    # make longitudinal
+    tensor_dataset = data_loading_wrappers.CustomDataset(
+        *tensor_data,
+        reshape=True,
+        remove_missing=True,
+        feature_dimensions=-1,
+        device=DEVICE
+    )
+    tensor_input = tensor_dataset.arrays
+    # fold-model prediction
+    model = all_models[fold]
+    model.eval()
+    cor_x = []
+    with torch.no_grad():
+        X_hat = model(tensor_input)[0].cpu().numpy()
+        for cov in range(X_hat.shape[1]):
+            cor_x.append(pearsonr(X_hat[:, cov], tensor_input[0][:, cov])[0])
+    all_correlations.append(cor_x)
 
-    for fold in range(N_FOLDS):
-        # apply feature preprocessing
-        dict_arrays_preproc = preprocess_transform(
-            dict_shap, all_scalers[fold], features_to_preprocess
-        )
-        if dict_arrays_preproc["y_baseline"].shape[-1] == 1:
-            dict_arrays_preproc["y_baseline"] = dict_arrays_preproc["y_baseline"][..., 0]
-        
-        if subsample:
-            subsample = np.random.choice(next(iter(dict_shap.values())).shape[0], n_background, replace=False)        
-            tensor_data = [
-                torch.FloatTensor(array[subsample]).to(DEVICE) for key, array in dict_arrays_preproc.items() if key in FEATURES_KEYS
-            ]
-        else:
-            tensor_data = [
-                torch.FloatTensor(array).to(DEVICE) for key, array in dict_arrays_preproc.items() if key in FEATURES_KEYS
-            ]
-        
-        # make longitudinal
-        tensor_dataset = data_loading_wrappers.CustomDataset(
-            *tensor_data,
-            reshape=True,
-            remove_missing=True,
-            feature_dimensions=-1,
-            device=DEVICE
-        )
-        tensor_input = tensor_dataset.arrays
-        # append
-        tensor_input_per_fold.append(tensor_input)
+correlations = np.array(all_correlations).mean(axis=0)
+print("First 5 correlations: ", np.round(correlations[0:5], 3))
+
+# correlations
+with open(f"{PATH_MODELS}/correlations", "wb") as fp:
+    pickle.dump(correlations, fp)
+
+# Latent space analysis through the decoder and
+# Latent space perturbation
+# Start from a baseline input for ONE observation
+perturbation_range = np.linspace(-2, 2, 5) # perturb from -2 to 2 std dev
+all_folds_perturbations = []
+
+for fold in range(N_FOLDS):
+    # apply feature preprocessing
+    dict_arrays_preproc = preprocess_transform(
+        dict_arrays, all_scalers[fold], features_to_preprocess
+    )
+    # remove last dimension for outcome with only one dimension
+    if dict_arrays_preproc["y_target"].shape[-1] == 1:
+        dict_arrays_preproc["y_target"] = dict_arrays_preproc["y_target"][..., 0]
+        dict_arrays_preproc["y_baseline"] = dict_arrays_preproc["y_baseline"][..., 0]
+
+    # keep only input features and get tensors
+    tensor_data = [
+        torch.FloatTensor(array).to(DEVICE) for key, array in dict_arrays_preproc.items()
+    ]
+    # make longitudinal
+    tensor_dataset = data_loading_wrappers.CustomDataset(
+        *tensor_data,
+        reshape=True,
+        remove_missing=True,
+        feature_dimensions=-1,
+        device=DEVICE
+    )
+    tensor_input = tensor_dataset.arrays
+    # fold-model
+    x = tensor_input[0]
+    model = all_models[fold]
+    model.eval()
+    with torch.no_grad():
+        # get the estimated latent space first
+        mu, logvar = model.vae.encode(x)
+        z_hat = model.vae.reparameterize(mu, logvar)
+        x_hat = model.vae.decode(z_hat)
+
+    # Choose a latent dimension to perturb and a perturbation amount
+    list_sensitivities = []
+
+    for latent_dim_to_perturb in range(LATENT_DIM):
+        reconstruction_changes = [] # List to store change per feature
+
+        for eps in perturbation_range:
+            z_perturbed = z_hat.clone()
+            z_perturbed[0, latent_dim_to_perturb] += eps
+            with torch.no_grad():
+                pert_x_hat = model.vae.decode(z_perturbed)
+                # take difference
+                delta = pert_x_hat - x_hat
+                reconstruction_changes.append(delta.numpy())
+
+        # one element of reconstruction_changes is a matrix [n_perturbations, p_features]
+        reconstruction_changes = np.array(reconstruction_changes)
+
+        # For each feature, calculate its sensitivity to the latent dimension
+        # (e.g., variance across perturbations or max absolute change)
+        feature_sensitivity = np.var(reconstruction_changes, axis=0)
+        # feature_sensitivity.shape
+        average_feature_sensitivity = feature_sensitivity.mean(axis=0)
+        # feature_sensitivity = np.max(np.abs(reconstruction_changes), axis=0)
+        list_sensitivities.append(average_feature_sensitivity)
     
-    combined_tensors_per_fold = []
-    for fold in range(N_FOLDS):
-        combined_tensors_per_fold.append(torch.cat(tensor_input_per_fold[fold], dim=1))    
-    combined_tensors = torch.cat(combined_tensors_per_fold, dim=0)
+    # make one array (one row per latent dim)
+    array_sensitivities = np.array(list_sensitivities)
+    all_folds_perturbations.append(array_sensitivities)
 
-    return combined_tensors
+array_folds_perturbations = np.array(all_folds_perturbations)
+with open(f"{PATH_MODELS}/array_folds_perturbations", "wb") as fp:
+    pickle.dump(array_folds_perturbations, fp)
 
-
-# -------------------------------------------------------------------------
-# ---------------------- Run SHAP explanation -----------------------------
-# -------------------------------------------------------------------------
-print("---------------- Running SHAP ---------------")
-ensemble_model = EnsembleModel(all_models)
-dict_shap = {key: array for key, array in dict_arrays.items() if key in FEATURES_KEYS}
-
-background_data = prepare_data_for_shap(dict_shap)
-print("Shape background_data for SHAP: ", background_data.shape)
-explainer = shap.GradientExplainer(ensemble_model, background_data)
-
-shap_values = explainer.shap_values(background_data)
-
-# save shap values ot pickle
-with open(f"{PATH_MODELS}/shap_values", "wb") as fp:
-    pickle.dump(shap_values, fp)
+top_sensitive_features = np.argsort(array_folds_perturbations.mean(axis=0), axis=1)[:, 0:5]
+latent_dim = 0
+print(f"Features most sensitive to latent dim {latent_dim}: \n {top_sensitive_features[latent_dim, :]}")

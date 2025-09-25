@@ -1,9 +1,9 @@
-# SHAP explanations
-import pickle
+# analysis of loss components
 import os
+import pickle
 
-import shap
 import torch
+import torch.nn as nn
 import pandas as pd
 import numpy as np
 
@@ -11,6 +11,23 @@ from src.vae_attention.full_model import DeltaTimeAttentionVAE
 from real_data_analysis.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
 from real_data_analysis.features_preprocessing import preprocess, preprocess_transform
 from src.utils import data_loading_wrappers
+
+
+def loss_components(m_out, batch):
+    """
+    Loss function. The structure depends on the batch data.
+    To be modified according to the data used.
+
+    VAE loss + Prediction Loss (here MSE)
+    """
+    # Reconstruction loss (MSE)
+    BCE = nn.functional.mse_loss(m_out[0], batch[0], reduction='none')
+    # KL divergence
+    KLD = -0.5 * torch.sum(1 + m_out[3] - m_out[2].pow(2) - m_out[3].exp())
+    # label prediction loss
+    PredMSE = nn.functional.mse_loss(m_out[1], batch[3], reduction='none')
+
+    return dict(BCE=BCE, KLD=KLD, PredMSE=PredMSE)
 
 
 # Create directory for results
@@ -157,7 +174,6 @@ dict_arrays = dict(
 with open(f"{PATH_MODELS}/all_scalers", "rb") as fp:   # Pickling scalers
     all_scalers = pickle.load(fp)
 
-# Load torch models
 all_models = []
 for fold in range(N_FOLDS):
     print(f"Loading model fold {fold+1} of {N_FOLDS}")
@@ -181,87 +197,57 @@ for fold in range(N_FOLDS):
     all_models.append(model)
 
 
-# Define a Torch ensemble model that takes in input a list of models
-class EnsembleModel(torch.nn.Module):
-    def __init__(self, model_list):
-        super(EnsembleModel, self).__init__()
-        self.models = torch.nn.ModuleList(model_list)
-        
-    def forward(self, x):
-        """
-        Args:
-            x: torch tensor array with ALL features concatenated
-        """
-        # Transform input back to a list of tensors
-        tensors_list = []
-        start_s = 0
-        end_s = 0
-        for ii, key in enumerate(FEATURES_KEYS):
-            n_feat = len(features[key].values())
-            end_s += n_feat
-            tensors_list.append(x[:, start_s:end_s])
-            start_s += n_feat
-        # x is expected to be already properly scaled
-        outputs = [model(tensors_list)[1] for model in self.models]
-        return torch.stack(outputs).mean(dim=0)
+# LOSS components
+mse_all_folds = []
+bce_all_folds = []
+attn_weights = []
 
+for fold in range(N_FOLDS):
+    # apply feature preprocessing
+    dict_arrays_preproc = preprocess_transform(
+        dict_arrays, all_scalers[fold], features_to_preprocess
+    )
+    # remove last dimension for outcome with only one dimension
+    if dict_arrays_preproc["y_target"].shape[-1] == 1:
+        dict_arrays_preproc["y_target"] = dict_arrays_preproc["y_target"][..., 0]
+        dict_arrays_preproc["y_baseline"] = dict_arrays_preproc["y_baseline"][..., 0]
 
-# SHAP needs as input a single numpy array with the features
-# pre-process the input data with all folds scalers at once
-def prepare_data_for_shap(dict_shap, subsample=False, n_background=100):
-    tensor_input_per_fold = []
-
-    for fold in range(N_FOLDS):
-        # apply feature preprocessing
-        dict_arrays_preproc = preprocess_transform(
-            dict_shap, all_scalers[fold], features_to_preprocess
+    # keep only input features and get tensors
+    tensor_data = [
+        torch.FloatTensor(array).to(DEVICE) for key, array in dict_arrays_preproc.items()
+    ]
+    # make longitudinal
+    tensor_dataset = data_loading_wrappers.CustomDataset(
+        *tensor_data,
+        reshape=True,
+        remove_missing=True,
+        feature_dimensions=-1,
+        device=DEVICE
+    )
+    tensor_input = tensor_dataset.arrays
+    # fold-model prediction
+    model = all_models[fold]
+    model.eval()
+    with torch.no_grad():
+        pred = model(tensor_input)
+        # x_hat, y_hat, mu, logvar
+        loss = loss_components(
+            m_out=pred,
+            batch=tensor_input
         )
-        if dict_arrays_preproc["y_baseline"].shape[-1] == 1:
-            dict_arrays_preproc["y_baseline"] = dict_arrays_preproc["y_baseline"][..., 0]
-        
-        if subsample:
-            subsample = np.random.choice(next(iter(dict_shap.values())).shape[0], n_background, replace=False)        
-            tensor_data = [
-                torch.FloatTensor(array[subsample]).to(DEVICE) for key, array in dict_arrays_preproc.items() if key in FEATURES_KEYS
-            ]
-        else:
-            tensor_data = [
-                torch.FloatTensor(array).to(DEVICE) for key, array in dict_arrays_preproc.items() if key in FEATURES_KEYS
-            ]
-        
-        # make longitudinal
-        tensor_dataset = data_loading_wrappers.CustomDataset(
-            *tensor_data,
-            reshape=True,
-            remove_missing=True,
-            feature_dimensions=-1,
-            device=DEVICE
-        )
-        tensor_input = tensor_dataset.arrays
-        # append
-        tensor_input_per_fold.append(tensor_input)
-    
-    combined_tensors_per_fold = []
-    for fold in range(N_FOLDS):
-        combined_tensors_per_fold.append(torch.cat(tensor_input_per_fold[fold], dim=1))    
-    combined_tensors = torch.cat(combined_tensors_per_fold, dim=0)
+        mse_all_folds.append(loss["PredMSE"].numpy())
+        bce_all_folds.append(loss["BCE"].numpy())
 
-    return combined_tensors
+    attn_weights.append(model.get_attention_weights(tensor_input))
 
 
-# -------------------------------------------------------------------------
-# ---------------------- Run SHAP explanation -----------------------------
-# -------------------------------------------------------------------------
-print("---------------- Running SHAP ---------------")
-ensemble_model = EnsembleModel(all_models)
-dict_shap = {key: array for key, array in dict_arrays.items() if key in FEATURES_KEYS}
+print("Average Prediction MSE: ", np.array(mse_all_folds).mean())
+print("Average Reconstruction MSE: ", np.array(bce_all_folds).mean())
 
-background_data = prepare_data_for_shap(dict_shap)
-print("Shape background_data for SHAP: ", background_data.shape)
-explainer = shap.GradientExplainer(ensemble_model, background_data)
+pred_mse = np.array(mse_all_folds).mean(axis=0)
+pred_mse_x = np.array(bce_all_folds).mean(axis=0)
+attn_weights = np.array(attn_weights).mean(axis=0)
 
-shap_values = explainer.shap_values(background_data)
-
-# save shap values ot pickle
-with open(f"{PATH_MODELS}/shap_values", "wb") as fp:
-    pickle.dump(shap_values, fp)
+# save attention weights
+with open(f"{PATH_MODELS}/attn_weights", "wb") as fp:
+    pickle.dump(attn_weights, fp)
