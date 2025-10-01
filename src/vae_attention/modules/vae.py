@@ -42,18 +42,28 @@ class VAE(nn.Module):
 
         return mu, lvar
     
-    def reparameterize(self, mu, logvar):
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
+    def reparameterize(self, mu, logvar, use_sampling=None):
+        
+        if use_sampling is None:
+            use_sampling = self.training  # Sample during training, use mean during eval
+        
+        if use_sampling:
+            # Sample during training for regularization
+            std = torch.exp(0.5 * logvar)
+            eps = torch.randn_like(std)
+            z = mu + eps * std
+        else:
+            # Use mean during inference for stability
+            z = mu
 
-        return mu + eps * std
+        return z
     
     def decode(self, z):
         return self.decoder(z)
 
     def forward(self, x):
         mu, logvar = self.encode(x)
-        z_hat = self.reparameterize(mu, logvar)
+        z_hat = self.reparameterize(mu, logvar, use_sampling=None)
         x_hat = self.decode(z_hat)
         
         return x_hat, mu, logvar
