@@ -1,16 +1,17 @@
-# Full Model definition
+# Full Model definition with the following structure:
+# - VAE on genomics
+# - z_hat from vae is input to the time expansion plust additional features
+# - transformer
+# - output prediction over time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from src.utils.decorator import compose_docstring
 
 from src.vae_attention.modules.transformer import TransformerEncoderLayerWithWeights
 from src.vae_attention.modules.sinusoidal_position_encoder import SinusoidalPositionalEncoding
 from src.vae_attention.modules.vae import VAE
 
 
-@compose_docstring(VAE, SinusoidalPositionalEncoding, TransformerEncoderLayerWithWeights)
 class DeltaTimeAttentionVAE(nn.Module):
     """
     Model for longitudinal data with repeated measurements over time and 
@@ -43,7 +44,7 @@ class DeltaTimeAttentionVAE(nn.Module):
         transformer_input_dim,
         transformer_dim_feedforward,
         use_sampling_in_vae=None,
-        nheads=4,
+        nheads=2,
         dropout=0.0,
         dropout_attention=0.0,
         beta_vae=1.0,
@@ -85,7 +86,7 @@ class DeltaTimeAttentionVAE(nn.Module):
         # ---- non-linear projection of [X, y_t0] to common input dimension -----
         # Adding +1 to input_dim to account for the baseline value of y: y_t0
         self.projection_to_transformer = nn.Sequential(
-            nn.Linear(input_dim + 1, transformer_input_dim),
+            nn.Linear(vae_latent_dim + 1, transformer_input_dim),
             nn.GELU(),
             nn.Dropout(dropout)
         )
@@ -167,7 +168,7 @@ class DeltaTimeAttentionVAE(nn.Module):
         x_hat, mu, logvar, z_hat = self.vae(x, use_sampling=self.use_sampling_in_vae)
         
         # --------------------- Concat Static fatures ----------------------
-        h = torch.cat([x_hat, y_baseline], dim=-1)
+        h = torch.cat([z_hat, y_baseline], dim=-1)
 
         # ------ positional encoding and projection ------
         h_exp = self.expand_input_in_time(h)
@@ -225,10 +226,10 @@ class DeltaTimeAttentionVAE(nn.Module):
             x, y_baseline, patients_static_features = self.preprocess_input(batch)
 
             # ---------------------------- VAE ----------------------------
-            x_hat, mu, logvar = self.vae(x)
+            x_hat, mu, logvar, z_hat = self.vae(x, use_sampling=self.use_sampling_in_vae)
             
             # --------------------- Concat Static fatures ----------------------
-            h = torch.cat([x_hat, y_baseline], dim=-1)
+            h = torch.cat([z_hat, y_baseline], dim=-1)
 
             # ------ positional encoding and projection ------
             h_exp = self.expand_input_in_time(h)
@@ -257,7 +258,7 @@ if __name__ == "__main__":
 
     k = 5
     n = 10
-    p = 6
+    p = 20
     p_static = 3
     n_timepoints = 5
     n_measurements = 4
@@ -280,30 +281,24 @@ if __name__ == "__main__":
     y0[3, 1, :] = torch.nan
     y0[9, 3, :] = torch.nan
 
-    # X = torch.randn(n, p)
-    # y = torch.randn(n, n_timepoints)
-    # y0 = torch.randn(n, 1)
-    # x_static = torch.randn(n, p_static)
-
     model = DeltaTimeAttentionVAE(
         input_dim=p,
         patient_features_dim=p_static,
         n_timepoints=n_timepoints,
         vae_latent_dim=k,
         vae_input_to_latent_dim=4,
-        max_len_position_enc=5,
+        max_len_position_enc=10,
         transformer_input_dim=12,
         transformer_dim_feedforward=8,
-        nheads=4,
+        nheads=1,
     )
 
     batch = [
         torch.tensor(X),
-        torch.tensor(y0),
         torch.tensor(x_static),
+        torch.tensor(y0),
         torch.tensor(y)
     ]
-    torch.isnan(y).any()
 
     # ------------------ process input batch ------------------
     x, y_baseline, patients_static_features = model.preprocess_input(batch)
@@ -311,10 +306,11 @@ if __name__ == "__main__":
     x[mask]
     
     # ---------------------------- VAE ----------------------------
-    x_hat, mu, logvar = model.vae(x)
-
+    x_hat, mu, logvar, z_hat = model.vae(x)
+    x_hat.shape
+    z_hat.shape
     # --------------------- Concat Static fatures ----------------------
-    h = torch.cat([x_hat, y_baseline], dim=-1)
+    h = torch.cat([z_hat, y_baseline], dim=-1)
     h.shape
 
     # ------ positional encoding and projection ------

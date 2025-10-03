@@ -1,4 +1,4 @@
-# SHAP explanations
+# Latent space SHAP explanations
 import pickle
 import os
 import copy
@@ -8,18 +8,18 @@ import torch
 import pandas as pd
 import numpy as np
 
-from src.vae_attention.full_model import DeltaTimeAttentionVAE
 from real_data_analysis.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
 from real_data_analysis.features_preprocessing import preprocess, preprocess_transform
 from src.utils import data_loading_wrappers
 from real_data_analysis.config_reader import read_config
 from real_data_analysis.get_arrays import load_and_process_data
 
+from real_data_analysis.model_use_vae_z.full_model import DeltaTimeAttentionVAE
 
 # Read config
-PATH_MODELS = "./res_train"
+PATH_MODELS = "./real_data_analysis/results/res_train_v2"
 
-config_dict = read_config("config.ini")
+config_dict = read_config("./real_data_analysis/model_use_vae_z/config.ini")
 DEVICE = torch.device(config_dict["training_parameters"]["device"])
 N_FOLDS = config_dict["training_parameters"]["n_folds"]
 FEATURES_KEYS = list(config_dict["preprocess"].keys())[:-1]
@@ -27,7 +27,7 @@ FEATURES_KEYS = list(config_dict["preprocess"].keys())[:-1]
 # --------------------------------------------------------
 # -------------------- Load data -------------------------
 # --------------------------------------------------------
-dict_arrays, features_to_preprocess = load_and_process_data(config_dict, data_dir="./")
+dict_arrays, features_to_preprocess = load_and_process_data(config_dict, data_dir="./real_data_analysis/results/data")
 n_individuals = dict_arrays["genes"].shape[0]
 p = dict_arrays["genes"].shape[2]
 p_static = dict_arrays["static_patient_features"].shape[2]
@@ -62,18 +62,17 @@ for fold in range(N_FOLDS):
 
 
 # Define a Torch ensemble model that takes in input a list of models
-class EnsembleModel(torch.nn.Module):
-    def __init__(self, model_list, time_to_explain):
-        super(EnsembleModel, self).__init__()
+class EnsembleModelVae(torch.nn.Module):
+    def __init__(self, model_list, latent_dim_to_explain):
+        super(EnsembleModelVae, self).__init__()
         self.models = torch.nn.ModuleList(model_list)
-        self.time_to_explain = time_to_explain
+        self.latent_dim_to_explain = latent_dim_to_explain
 
-    def forward(self, *x):
-        x_list = list(x)
+    def forward(self, x):
         all_outputs = []
         for model in self.models:
             model.eval()
-            output = model(x_list)[1][:, [self.time_to_explain]]
+            output = model.vae.encoder(x)[:, [self.latent_dim_to_explain]]
             all_outputs.append(output)
         return torch.stack(all_outputs).mean(dim=0)
 
@@ -126,16 +125,16 @@ def prepare_data_for_shap(dict_shap, subsample=False, n_background=100):
 # -------------------------------------------------------------------------
 print("---------------- Running SHAP ---------------")
 dict_shap = {key: array for key, array in dict_arrays.items() if key in FEATURES_KEYS}
-background_data = prepare_data_for_shap(dict_shap, subsample=True, n_background=3)
-print("Shape background_data for SHAP: ", background_data[0].shape)
-explain_data = prepare_data_for_shap(dict_shap, subsample=False)
-print("Shape explain daata for SHAP: ", explain_data[0].shape)
+background_data = prepare_data_for_shap(dict_shap, subsample=True, n_background=3)[0]
+print("Shape background_data for SHAP: ", background_data.shape)
+explain_data = prepare_data_for_shap(dict_shap, subsample=False)[0]
+print("Shape explain daata for SHAP: ", explain_data.shape)
 
 all_shap_values = []
-for time_point in range(n_timepoints):
-    ensemble_model = EnsembleModel(all_models, time_to_explain=time_point)
+for latent_dim_to_explain in range(config_dict["model_params"]["latent_dim"]):
+    ensemble_model = EnsembleModelVae(all_models, latent_dim_to_explain=latent_dim_to_explain)
     explainer = shap.GradientExplainer(ensemble_model, background_data)
-    shap_values = explainer.shap_values(explain_data)
+    shap_values = explainer.shap_values(explain_data)[..., -1]
     all_shap_values.append(shap_values)
 
 # save shap values ot pickle
