@@ -8,9 +8,11 @@ import pandas as pd
 # --------------------------------------------------------
 
 # File names
-PATH_TO_PATIENT_DATA = "patient_data.csv"
-PATH_TO_GENOMICS_DATA = "genomics.csv"
-PATH_TO_CLINICAL_DATA = "clinical.csv"
+path = "./real_data_analysis/results/data"
+
+PATH_TO_PATIENT_DATA = f"{path}/patient_data.csv"
+PATH_TO_GENOMICS_DATA = f"{path}/genomics.csv"
+PATH_TO_CLINICAL_DATA = f"{path}/clinical.csv"
 
 # column names
 PATIENT_ID = "ID"

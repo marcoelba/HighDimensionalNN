@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 
-ids = [1, 2, 3, 4, 5]
+ids = [1, 2, 3, 4, 5, 6, 7, 8]
 p = 10
 gene_names = [f"gene_{i}" for i in range(p)]
 
@@ -17,7 +17,7 @@ for id_num in ids:
             a = np.random.randint(1, 10)
             b = np.random.uniform(0, 1)
             c = np.random.uniform(0, 1)
-            tg = np.random.randn() + 2
+            tg = np.abs(np.random.randn() + 2)
             X = np.random.randn(p)
             row = [id_num, visit, meal, time, a, b, c, tg]
             [row.append(X[j]) for j in range(p)]
@@ -26,8 +26,9 @@ for id_num in ids:
 
 df_main = pd.DataFrame(main_data, columns=[['ID', 'Visit', 'Meal', 'Time', 'Sex', 'Age', 'BMI', 'TG'] + gene_names])
 
-df_main.to_csv("features_data_ready.csv", index=False, sep=";")
-df_main.to_csv("clinical_data_ready.csv", index=False, sep=";")
+path = "./real_data_analysis/results/data"
+df_main.to_csv(f"{path}/features_data_ready.csv", index=False, sep=";")
+df_main.to_csv(f"{path}/clinical_data_ready.csv", index=False, sep=";")
 
 genes_names_df = pd.DataFrame({'column_names': gene_names})
-genes_names_df.to_csv('genes_names.csv', sep=";", index=False)
+genes_names_df.to_csv(f"{path}/genes_names.csv", sep=";", index=False)

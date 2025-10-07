@@ -8,7 +8,7 @@ import torch
 import pandas as pd
 import numpy as np
 
-from src.vae_attention.full_model import DeltaTimeAttentionVAE
+from real_data_analysis.model_use_vae_z.full_model import DeltaTimeAttentionVAE
 from real_data_analysis.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
 from real_data_analysis.features_preprocessing import preprocess, preprocess_transform
 from src.utils import data_loading_wrappers
@@ -17,7 +17,7 @@ from real_data_analysis.get_arrays import load_and_process_data
 
 
 # Read config
-PATH_MODELS = "./res_train"
+PATH_MODELS = "./res_train_v2"
 
 config_dict = read_config("config.ini")
 DEVICE = torch.device(config_dict["training_parameters"]["device"])
@@ -78,7 +78,7 @@ class EnsembleModel(torch.nn.Module):
         return torch.stack(all_outputs).mean(dim=0)
 
 # pre-process the input data with all folds scalers at once
-def prepare_data_for_shap(dict_shap, subsample=False, n_background=100):
+def prepare_data_for_shap(dict_shap, subsample=False, n_background=100, patient_index=None):
     tensor_input_per_fold = []
 
     for fold in range(N_FOLDS):
@@ -88,8 +88,12 @@ def prepare_data_for_shap(dict_shap, subsample=False, n_background=100):
         )
         if dict_arrays_preproc["y_baseline"].shape[-1] == 1:
             dict_arrays_preproc["y_baseline"] = dict_arrays_preproc["y_baseline"][..., 0]
-        
-        if subsample:
+
+        if patient_index is not None:
+            tensor_data = [
+                torch.FloatTensor(array[patient_index]).to(DEVICE) for key, array in dict_arrays_preproc.items()
+            ]
+        elif (patient_index is None) and subsample:
             index = np.random.choice(next(iter(dict_shap.values())).shape[0], n_background, replace=False)
             tensor_data = [
                 torch.FloatTensor(array[index]).to(DEVICE) for key, array in dict_arrays_preproc.items()
@@ -126,10 +130,10 @@ def prepare_data_for_shap(dict_shap, subsample=False, n_background=100):
 # -------------------------------------------------------------------------
 print("---------------- Running SHAP ---------------")
 dict_shap = {key: array for key, array in dict_arrays.items() if key in FEATURES_KEYS}
-background_data = prepare_data_for_shap(dict_shap, subsample=True, n_background=3)
+background_data = prepare_data_for_shap(dict_shap, subsample=False)
 print("Shape background_data for SHAP: ", background_data[0].shape)
 explain_data = prepare_data_for_shap(dict_shap, subsample=False)
-print("Shape explain daata for SHAP: ", explain_data[0].shape)
+print("Shape explain data for SHAP: ", explain_data[0].shape)
 
 all_shap_values = []
 for time_point in range(n_timepoints):
@@ -138,6 +142,6 @@ for time_point in range(n_timepoints):
     shap_values = explainer.shap_values(explain_data)
     all_shap_values.append(shap_values)
 
-# save shap values ot pickle
-with open("all_shap_values", "wb") as fp:
-    pickle.dump(all_shap_values, fp)
+# # save shap values ot pickle
+# with open("all_shap_values", "wb") as fp:
+#     pickle.dump(all_shap_values, fp)

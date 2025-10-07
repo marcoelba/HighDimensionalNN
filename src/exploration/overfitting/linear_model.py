@@ -79,6 +79,11 @@ beta = np.random.choice(
 )
 
 X = np.random.randn(n, p)
+np.round(np.cov(X, rowvar=False), 2)
+cov_matrix = np.ones([p, p]) * 0.5
+np.fill_diagonal(cov_matrix, 1.)
+X = X.dot(np.linalg.cholesky(cov_matrix).transpose())
+np.round(np.cov(X, rowvar=False), 2)
 y = np.dot(X[:, 0:p1], W) + np.dot(X[:, p1:p], beta) + np.random.randn(n) * 0.5
 y = y[..., None]
 
@@ -174,33 +179,73 @@ class TensorModel(torch.nn.Module):
         super(TensorModel, self).__init__()
         self.model = model
         
-    def forward(self, x):
+    def forward(self, *x):
         """
         Args:
             x: torch tensor array with ALL features concatenated
         """
-        # Transform input back to a list of tensors
-        tensors_list = []
-        tensors_list.append(x[:, 0:-1])
-        tensors_list.append(x[:, -1:])
-        output = self.model(tensors_list)
+        x_list = list(x)
+        output = self.model(x_list)
         return output
 
 
 model_shap = TensorModel(model_nn)
-background_data = torch.concat(tensor_data_train, dim=1)
-model_shap(background_data)
-print("Shape background_data for SHAP: ", background_data.shape)
+background_data = tensor_data_train[0:1]
+model_shap(*background_data)
 explainer = shap.GradientExplainer(model_shap, background_data)
 
-shap_values = explainer(background_data)[:, :, -1]
 shap_values = explainer.shap_values(background_data)
 shap_values.shape
-shap_values = shap_values[:, 0:p, 0]
+shap_values = shap_values[..., -1]
 
-shap.summary_plot(shap_values, background_data[:, 0:p], show = True)
+shap.summary_plot(shap_values, background_data[0], show = True)
+
 shap.waterfall_plot(shap_values[0])
-shap.summary_plot(shap_values, background_data[:, 0:p], plot_type="bar")
+shap.summary_plot(shap_values, background_data[0], plot_type="bar")
+
+# Get base values for the explainer
+model_shap.eval()
+with torch.no_grad():
+    predictions = model_shap(*background_data)
+    base_value = predictions.numpy()
+
+feat_names = [f"f_{ii}" for ii in range(p)]
+
+# Create Explanation object manually
+explanation = shap.Explanation(
+    values=shap_values[0],  # For single output
+    base_values=base_value[0],
+    data=background_data[0][0].numpy(),  # Flatten if needed
+    feature_names=feat_names
+)
+
+[W, beta]
+background_data[0][0]
+shap.plots.waterfall(explanation)
+
+
+# -----------------------------------------------------------------
+# Use the 'interventional' approach with correlation-aware sampling
+def model_perm(x_array):
+    tensors_list = []
+    tensors_list.append(torch.tensor(x_array))
+
+    model_nn.eval()
+    with torch.no_grad():
+        pred = model_nn(tensors_list).numpy()
+    return pred
+
+
+array_data = tensor_data_train[0].numpy()
+model_perm(array_data)
+
+explainer = shap.explainers.Permutation(
+    model_perm,
+    array_data,
+    feature_perturbation='interventional',  # Accounts for correlations
+    dtype=np.float32
+)
+shap_values_int = explainer(array_data)
 
 # -------------------------------------------------------
 # ----------- Now removing 2 key predictors -------------
