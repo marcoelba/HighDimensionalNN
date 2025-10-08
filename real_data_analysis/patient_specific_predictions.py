@@ -23,7 +23,7 @@ PATH_MODELS = "./res_train_v2"
 PATH_PLOTS = "plots_patient_shap"
 os.makedirs(PATH_PLOTS, exist_ok = True)
 
-config_dict = read_config("config.ini")
+config_dict = read_config("./real_data_analysis/model_use_vae_z/config.ini")
 DEVICE = torch.device(config_dict["training_parameters"]["device"])
 N_FOLDS = config_dict["training_parameters"]["n_folds"]
 FEATURES_KEYS = list(config_dict["preprocess"].keys())[:-1]
@@ -40,6 +40,12 @@ n_timepoints = dict_arrays["y_target"].shape[2]
 # change this
 genes_names = pd.read_csv("genes_names.csv", header=0, sep=";")
 genes_names = genes_names["column_names"].to_numpy()
+
+all_features_names = np.concatenate([
+    genes_names,
+    np.array(config_dict["column_names"]["patient_cols"]),
+    np.array(["Baseline"])
+])
 
 # Load pickle files
 with open(f"{PATH_MODELS}/all_scalers", "rb") as fp:   # Pickling scalers
@@ -209,13 +215,24 @@ for time_point in range(n_timepoints):
     with torch.no_grad():
         predictions = ensemble_model(*background_data)
         base_values = predictions.numpy()
-
     mean_base_values = np.array(np.array_split(base_values, N_FOLDS, axis=0)).mean(axis=0)
 
     genes_shap = all_shap_values[time_point][0][..., -1]  # genes shap
+    patient_clin_shap = all_shap_values[time_point][1][..., -1]  # patient shap
+    baseline_shap = all_shap_values[time_point][2][..., -1]  # patient shap
+
+    # Takes averages
     mean_genes_shap = np.array(np.array_split(genes_shap, N_FOLDS, axis=0)).mean(axis=0)
+    mean_patient_clin_shap = np.array(np.array_split(patient_clin_shap, N_FOLDS, axis=0)).mean(axis=0)
+    mean_baseline_shap = np.array(np.array_split(baseline_shap, N_FOLDS, axis=0)).mean(axis=0)
 
     genes_data = np.array(np.array_split(background_data[0], N_FOLDS, axis=0)).mean(axis=0)
+    patient_clin_data = np.array(np.array_split(background_data[1], N_FOLDS, axis=0)).mean(axis=0)
+    baseline_data = np.array(np.array_split(background_data[2], N_FOLDS, axis=0)).mean(axis=0)
+
+    # make one array for shap and data
+    mean_shap = np.concatenate([mean_genes_shap, mean_patient_clin_shap, mean_baseline_shap], axis=-1)
+    mean_data = np.concatenate([genes_data, patient_clin_data, baseline_data], axis=-1)
 
     # slice over time
     slice_start = 0
@@ -229,9 +246,9 @@ for time_point in range(n_timepoints):
         sum_notna = notna.sum()
         slice_end += sum_notna
 
-        patient_shap = mean_genes_shap[slice_start:slice_end]
+        patient_shap = mean_shap[slice_start:slice_end]
         patient_base_value = mean_base_values[slice_start:slice_end]
-        patient_data = genes_data[slice_start:slice_end]
+        patient_data = mean_data[slice_start:slice_end]
         
         # Average shap values over multiple meals
         mean_patient_shap = patient_shap.mean(axis=0)
@@ -245,13 +262,113 @@ for time_point in range(n_timepoints):
             values=mean_patient_shap,
             base_values=mean_patient_base_value,
             data=mean_patient_data,  # Flatten if needed
-            feature_names=genes_names
+            feature_names=all_features_names
         )
 
-        fig = plt.figure(figsize=(20, 10))
+        fig = plt.figure()
         shap.plots.waterfall(explanation, show=False, max_display=25)
-        plt.show()
+        fig.set_size_inches(20, 15)  # change after because waterfall resize the fig
+        # plt.show()
         fig.savefig(f"{path_patient_plots}/genes_shap_time_{time_point+1}.pdf", format="pdf")
+        plt.close()
+
+print("\n ---------------- END ------------------")
+
+# Using the latent shap values
+# To group genes based on their influence on the latent dimensions
+with open(f"{PATH_MODELS}/vae_latent_shap_values", "rb") as fp:
+    vae_latent_shap_values = pickle.load(fp)
+
+latent_features_indices = []
+for latent_dim in range(config_dict["model_params"]["latent_dim"]):
+    sum_latent = np.abs(vae_latent_shap_values[latent_dim]).sum(axis=0)
+    top_10 = (sum_latent > np.quantile(sum_latent, q=0.9)).sum()
+    top_10_genes = np.argsort(sum_latent)[::-1][0:top_10]
+    latent_features_indices.append(top_10_genes)
+
+
+new_features_names = np.concatenate([
+    np.array([f"latent_dim_{ll}" for ll in range(config_dict["model_params"]["latent_dim"])]),
+    np.array(config_dict["column_names"]["patient_cols"]),
+    np.array(["Baseline"])
+])
+
+
+# Plot shap waterfall values
+for time_point in range(n_timepoints):
+
+    # Get base values for the explainer - time specific
+    ensemble_model = EnsembleModel(all_models, time_to_explain=time_point)
+    ensemble_model.eval()
+    with torch.no_grad():
+        predictions = ensemble_model(*background_data)
+        base_values = predictions.numpy()
+    mean_base_values = np.array(np.array_split(base_values, N_FOLDS, axis=0)).mean(axis=0)
+
+    genes_shap = all_shap_values[time_point][0][..., -1]  # genes shap
+    patient_clin_shap = all_shap_values[time_point][1][..., -1]  # patient shap
+    baseline_shap = all_shap_values[time_point][2][..., -1]  # patient shap
+
+    # Takes averages
+    mean_genes_shap = np.array(np.array_split(genes_shap, N_FOLDS, axis=0)).mean(axis=0)
+    mean_patient_clin_shap = np.array(np.array_split(patient_clin_shap, N_FOLDS, axis=0)).mean(axis=0)
+    mean_baseline_shap = np.array(np.array_split(baseline_shap, N_FOLDS, axis=0)).mean(axis=0)
+
+    genes_data = np.array(np.array_split(background_data[0], N_FOLDS, axis=0)).mean(axis=0)
+    patient_clin_data = np.array(np.array_split(background_data[1], N_FOLDS, axis=0)).mean(axis=0)
+    baseline_data = np.array(np.array_split(background_data[2], N_FOLDS, axis=0)).mean(axis=0)
+
+    # make the average for the top genes
+    new_latent_gene_shap = []
+    for latent_dim in range(config_dict["model_params"]["latent_dim"]):
+        new_latent_gene_shap.append(mean_genes_shap[:, latent_features_indices[latent_dim]].sum(axis=1))
+    new_latent_gene_shap = np.array(new_latent_gene_shap).transpose()
+
+    new_latent_gene_data = []
+    for latent_dim in range(config_dict["model_params"]["latent_dim"]):
+        new_latent_gene_data.append(genes_data[:, latent_features_indices[latent_dim]].sum(axis=1))
+    new_latent_gene_data = np.array(new_latent_gene_data).transpose()
+
+    # make one array for shap and data
+    mean_shap = np.concatenate([new_latent_gene_shap, mean_patient_clin_shap, mean_baseline_shap], axis=-1)
+    mean_data = np.concatenate([new_latent_gene_data, patient_clin_data, baseline_data], axis=-1)
+
+    # slice over time
+    slice_start = 0
+    slice_end = 0
+    for patient_id in range(n_individuals):
+        # make folder for patient specific plots
+        path_patient_plots = f"{PATH_PLOTS}/patient_{patient_id}"
+
+        target = dict_shap["y_target"][patient_id]
+        notna = ~np.isnan(target[:, 0])
+        sum_notna = notna.sum()
+        slice_end += sum_notna
+
+        patient_shap = mean_shap[slice_start:slice_end]
+        patient_base_value = mean_base_values[slice_start:slice_end]
+        patient_data = mean_data[slice_start:slice_end]
+        
+        # Average shap values over multiple meals
+        mean_patient_shap = patient_shap.mean(axis=0)
+        mean_patient_base_value = patient_base_value.mean()
+        mean_patient_data = patient_data.mean(axis=0)
+
+        slice_start += sum_notna
+
+        # make shap explanation object
+        explanation = shap.Explanation(
+            values=mean_patient_shap,
+            base_values=mean_patient_base_value,
+            data=mean_patient_data,  # Flatten if needed
+            feature_names=new_features_names
+        )
+
+        fig = plt.figure()
+        shap.plots.waterfall(explanation, show=False, max_display=25)
+        fig.set_size_inches(20, 15)  # change after because waterfall resize the fig
+        # plt.show()
+        fig.savefig(f"{path_patient_plots}/latent_genes_shap_time_{time_point+1}.pdf", format="pdf")
         plt.close()
 
 print("\n ---------------- END ------------------")
