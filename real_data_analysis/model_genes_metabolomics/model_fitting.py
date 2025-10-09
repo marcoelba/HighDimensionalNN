@@ -7,27 +7,28 @@ import pickle
 import os
 import copy
 
-from real_data_analysis.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
-from real_data_analysis.features_preprocessing import preprocess, preprocess_transform
-from real_data_analysis.config_reader import read_config
-from real_data_analysis.get_arrays import load_and_process_data
-from real_data_analysis.model_use_vae_z.full_model import DeltaTimeAttentionVAE
+from real_data_analysis.utils.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
+from real_data_analysis.utils.features_preprocessing import preprocess, preprocess_transform
+from real_data_analysis.utils.get_arrays import load_and_process_data
+
+from real_data_analysis.model_genes_metabolomics.config_reader import read_config
+from real_data_analysis.model_genes_metabolomics.full_model import DeltaTimeAttentionVAE
 
 from src.utils import training_wrapper
 from src.utils import data_loading_wrappers
 
 
 # Read config
-PATH_MODELS = "./real_data_analysis/results/res_train_v2"
+PATH_MODELS = "./real_data_analysis/results/res_train_v3"
 os.makedirs(PATH_MODELS, exist_ok = True)
 
-config_dict = read_config("./real_data_analysis/model_use_vae_z/config.ini")
+config_dict = read_config("./real_data_analysis/model_genes_metabolomics/config.ini")
 DEVICE = torch.device(config_dict["training_parameters"]["device"])
 
 # --------------------------------------------------------
 # -------------------- Load data -------------------------
 # --------------------------------------------------------
-dict_arrays, features_to_preprocess = load_and_process_data(config_dict, data_dir="./real_data_analysis/results/data")
+dict_arrays, features_to_preprocess = load_and_process_data(config_dict, data_dir="./real_data_analysis/data")
 n_individuals = dict_arrays["genes"].shape[0]
 p = dict_arrays["genes"].shape[2]
 p_static = dict_arrays["static_patient_features"].shape[2]
@@ -109,10 +110,8 @@ for fold in range(config_dict["training_parameters"]["n_folds"]):
         transformer_input_dim=config_dict["model_params"]["transformer_input_dim"],
         transformer_dim_feedforward=config_dict["model_params"]["transformer_dim_feedforward"],
         nheads=config_dict["model_params"]["n_heads"],
-        use_sampling_in_vae=None,
         dropout=0.1,
         dropout_attention=0.1,
-        prediction_weight=1.0
     ).to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
 

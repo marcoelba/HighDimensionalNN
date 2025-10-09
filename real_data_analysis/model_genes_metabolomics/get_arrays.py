@@ -3,11 +3,10 @@ import os
 import numpy as np
 import pandas as pd
 
-from real_data_analysis.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
-from real_data_analysis.config_reader import read_config
+from real_data_analysis.utils.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
 
 
-def load_and_process_data(config_dict: dict, data_dir: str="./real_data_analysis/"):
+def load_and_process_data(config_dict: dict, data_dir: str):
 
     column_names = config_dict["column_names"]
     

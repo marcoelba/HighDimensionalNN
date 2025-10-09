@@ -1,4 +1,5 @@
 import configparser
+import re
 
 
 def read_config(path_to_config="./config.ini"):
@@ -12,50 +13,35 @@ def read_config(path_to_config="./config.ini"):
     config_dict = dict()
 
     # data files
-    config_dict['file_names'] = {}
-    config_dict['file_names']['path_to_features_data'] = config.get('file_names', 'path_to_features_data')
-    config_dict['file_names']['path_to_clinical_data'] = config.get('file_names', 'path_to_clinical_data')
-    config_dict['file_names']['path_to_gene_names'] = config.get('file_names', 'path_to_gene_names')
-    config_dict['file_names']['path_to_metabolites_names'] = config.get('file_names', 'path_to_metabolites_names')
+    file_names = dict(config.items('file_names'))
+    config_dict['file_names'] = file_names
 
+    # data array - names and features
+    data_arrays = {}
     # array names
-    config_dict['array_names'] = {}
-    config_dict['array_names']['genes'] = config.get('array_names', 'genes')
-    config_dict['array_names']['genes'] = config.get('array_names', 'genes')
-    config_dict['array_names']['static_patient_features'] = config.get('array_names', 'static_patient_features')
-    config_dict['array_names']['y_baseline'] = config.get('array_names', 'y_baseline')
-    config_dict['array_names']['y_target'] = config.get('array_names', 'y_target')
-
-    # column_names
-    config_dict['column_names'] = {}
-    config_dict['column_names']['patient_id'] = config.get('column_names', 'patient_id')
-    config_dict['column_names']['patient_meal_id'] = config.get('column_names', 'patient_meal_id')
-    config_dict['column_names']['col_meal'] = config.get('column_names', 'col_meal')
-    config_dict['column_names']['col_visit'] = config.get('column_names', 'col_visit')
-    config_dict['column_names']['col_time'] = config.get('column_names', 'col_time')
-    config_dict['column_names']['col_outcome'] = config.get('column_names', 'col_outcome')
-    config_dict['column_names']['col_sex'] = config.get('column_names', 'col_sex')
-    config_dict['column_names']['col_age'] = config.get('column_names', 'col_age')
-    config_dict['column_names']['col_bmi'] = config.get('column_names', 'col_bmi')
-    # make additional parameters
-    config_dict['column_names']['static_patient_features'] = [
-        config_dict['column_names']['col_sex'],
-        config_dict['column_names']['col_age'],
-        config_dict['column_names']['col_bmi']
-    ]
+    array_names = re.split(r'[;,\s]+', config.get('arrays', 'array_names'))
+    # array columns
+    for array in array_names:
+        features = re.split(r'[;,\s]+', config.get('arrays', f"col_{array}"))
+        if len(features) == 1 and features[0] == 'all':
+            features = features[0]
+        data_arrays[array] = features
+    config_dict['data_arrays'] = data_arrays
+    
+    # other column_names
+    common_columns = dict(config.items('common_columns'))
+    config_dict['common_columns'] = common_columns
 
     # features to preprocess
     # one list per array
-    config_dict['preprocess'] = {}
-    config_dict['preprocess'][config_dict['array_names']['genes']] = "all"
-    config_dict['preprocess'][config_dict['array_names']['static_patient_features']] = [
-        {config_dict['column_names']['col_sex']: False},
-        {config_dict['column_names']['col_age']: True},
-        {config_dict['column_names']['col_bmi']: True}
-    ]
-    config_dict['preprocess'][config_dict['array_names']['y_baseline']] = {config_dict['column_names']['col_outcome']: True}
-    config_dict['preprocess'][config_dict['array_names']['y_target']] = {config_dict['column_names']['col_outcome']: True}
-    
+    preprocess_arrays = {}
+    for array in array_names:
+        features = re.split(r'[;,\s]+', config.get('preprocess_arrays', f"{array}"))
+        if len(features) == 1 and features[0] == 'all':
+            features = features[0]
+        preprocess_arrays[array] = features
+    config_dict['preprocess'] = preprocess_arrays
+
     # training_parameters
     config_dict['training_parameters'] = {}
     config_dict['training_parameters']['save_models'] = config.getboolean('training_parameters', 'save_models')
@@ -72,7 +58,8 @@ def read_config(path_to_config="./config.ini"):
 
     # model_params
     config_dict['model_params'] = {}
-    config_dict['model_params']['latent_dim'] = config.getint('model_params', 'latent_dim')
+    config_dict['model_params']['vae_metabolomics_latent_dim'] = config.getint('model_params', 'vae_metabolomics_latent_dim')
+    config_dict['model_params']['vae_genomics_latent_dim'] = config.getint('model_params', 'vae_genomics_latent_dim')
     config_dict['model_params']['transformer_input_dim'] = config.getint('model_params', 'transformer_input_dim')
     config_dict['model_params']['n_heads'] = config.getint('model_params', 'n_heads')
     config_dict['model_params']['transformer_dim_feedforward'] = config_dict['model_params']['transformer_input_dim'] * config_dict['model_params']['n_heads']

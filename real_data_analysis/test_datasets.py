@@ -4,8 +4,10 @@ import numpy as np
 
 
 ids = [1, 2, 3, 4, 5, 6, 7, 8]
-p = 10
-gene_names = [f"gene_{i}" for i in range(p)]
+p_genes = 10
+p_metab = 5
+gene_names = [f"gene_{i}" for i in range(p_genes)]
+metab_names = [f"metab_{i}" for i in range(p_metab)]
 
 main_data = []
 for id_num in ids:
@@ -18,17 +20,22 @@ for id_num in ids:
             b = np.random.uniform(0, 1)
             c = np.random.uniform(0, 1)
             tg = np.abs(np.random.randn() + 2)
-            X = np.random.randn(p)
+            X_genes = np.random.randn(p_genes)
+            X_metab = np.random.randn(p_metab)
             row = [id_num, visit, meal, time, a, b, c, tg]
-            [row.append(X[j]) for j in range(p)]
+            [row.append(X_genes[j]) for j in range(p_genes)]
+            [row.append(X_metab[j]) for j in range(p_metab)]
 
             main_data.append(row)
 
-df_main = pd.DataFrame(main_data, columns=[['ID', 'Visit', 'Meal', 'Time', 'Sex', 'Age', 'BMI', 'TG'] + gene_names])
+df_main = pd.DataFrame(main_data, columns=[['ID', 'Visit', 'Meal', 'Time', 'Sex', 'Age', 'BMI', 'TG'] + gene_names + metab_names])
 
-path = "./real_data_analysis/results/data"
+path = "./real_data_analysis/data"
 df_main.to_csv(f"{path}/features_data_ready.csv", index=False, sep=";")
 df_main.to_csv(f"{path}/clinical_data_ready.csv", index=False, sep=";")
 
 genes_names_df = pd.DataFrame({'column_names': gene_names})
 genes_names_df.to_csv(f"{path}/genes_names.csv", sep=";", index=False)
+
+metab_names_df = pd.DataFrame({'column_names': metab_names})
+metab_names_df.to_csv(f"{path}/metab_names.csv", sep=";", index=False)
