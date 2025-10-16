@@ -62,7 +62,7 @@ class DeltaTimeAttentionVAE(nn.Module):
         # ------------- VAE genomics -------------
         self.vae_genes = VAE(
             input_dim=input_dim_genes,
-            vae_input_to_latent_dim=model_config["vae_input_to_latent_dim"],
+            vae_input_to_latent_dim=model_config["vae_genomics_input_to_latent_dim"],
             vae_latent_dim=model_config["vae_genomics_latent_dim"],
             dropout=0.0
         )
@@ -70,7 +70,7 @@ class DeltaTimeAttentionVAE(nn.Module):
         # ------------- VAE metabolomics -------------
         self.vae_metab = VAE(
             input_dim=input_dim_metab,
-            vae_input_to_latent_dim=model_config["vae_input_to_latent_dim"],
+            vae_input_to_latent_dim=model_config["vae_metabolomics_input_to_latent_dim"],
             vae_latent_dim=model_config["vae_metabolomics_latent_dim"],
             dropout=0.0
         )
@@ -98,7 +98,7 @@ class DeltaTimeAttentionVAE(nn.Module):
         # -------------- Time-Aware transformer -------------
         self.transformer_module = TransformerEncoderLayerWithWeights(
             input_dim=model_config["transformer_input_dim"],
-            nheads=model_config["nheads"],
+            nheads=model_config["n_heads"],
             dim_feedforward=model_config["transformer_dim_feedforward"],
             dropout_attention=model_config["dropout_attention"],
             dropout=model_config["dropout"]
@@ -165,7 +165,7 @@ class DeltaTimeAttentionVAE(nn.Module):
         vae_metab_out = self.vae_metab(x_metab, use_sampling=self.use_sampling_in_vae)
         
         # --------------------- Concat Static fatures ----------------------
-        h = torch.cat([vae_genes_out[0], vae_metab_out[0], y_baseline], dim=-1)
+        h = torch.cat([vae_genes_out[1], vae_metab_out[1], y_baseline], dim=-1)
 
         # ----------- positional encoding and projection -----------
         h_exp = self.expand_input_in_time(h)
@@ -231,7 +231,7 @@ class DeltaTimeAttentionVAE(nn.Module):
             vae_metab_out = self.vae_metab(x_metab, use_sampling=self.use_sampling_in_vae)
             
             # --------------------- Concat Static fatures ----------------------
-            h = torch.cat([vae_genes_out[0], vae_metab_out[0], y_baseline], dim=-1)
+            h = torch.cat([vae_genes_out[1], vae_metab_out[1], y_baseline], dim=-1)
 
             # ------ positional encoding and projection ------
             h_exp = self.expand_input_in_time(h)

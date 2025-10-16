@@ -8,35 +8,49 @@ import torch.nn as nn
 import pandas as pd
 import numpy as np
 
-from src.vae_attention.full_model import DeltaTimeAttentionVAE
-from real_data_analysis.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
-from real_data_analysis.features_preprocessing import preprocess, preprocess_transform
+from real_data_analysis.utils.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
+from real_data_analysis.utils.features_preprocessing import preprocess_train, preprocess_transform
+
+from real_data_analysis.model_genes_metabolomics.get_arrays import load_and_process_data
+from real_data_analysis.model_genes_metabolomics.config_reader import read_config
+from real_data_analysis.model_genes_metabolomics.full_model import DeltaTimeAttentionVAE
+
 from src.utils import data_loading_wrappers
-from real_data_analysis.config_reader import read_config
-from real_data_analysis.get_arrays import load_and_process_data
 
 
-def loss_components(m_out, batch):
+def loss_components(m_out, batch, model):
     """
     Loss function. The structure depends on the batch data.
     To be modified according to the data used.
 
     VAE loss + Prediction Loss (here MSE)
     """
+    x_genes, x_metab, y_baseline, patients_static_features = model.process_batch(batch)
+    # vae output: x_hat, mu, logvar, z_hat
     # Reconstruction loss (MSE)
-    BCE = nn.functional.mse_loss(m_out[0], batch[0], reduction='none')
+    genes_vae_loss = nn.functional.mse_loss(m_out[0][0], x_genes, reduction='none')
+    metab_vae_loss = nn.functional.mse_loss(m_out[1][0], x_metab, reduction='none')
     # KL divergence
-    KLD = -0.5 * torch.sum(1 + m_out[3] - m_out[2].pow(2) - m_out[3].exp())
+    genes_KLD = -0.5 * torch.sum(1 + m_out[0][2] - m_out[0][1].pow(2) - m_out[0][2].exp())
+    metab_KLD = -0.5 * torch.sum(1 + m_out[1][2] - m_out[1][1].pow(2) - m_out[1][2].exp())
     # label prediction loss
-    PredMSE = nn.functional.mse_loss(m_out[1], batch[3], reduction='none')
+    PredMSE = nn.functional.mse_loss(m_out[-1], batch[-1], reduction='none')
 
-    return dict(BCE=BCE, KLD=KLD, PredMSE=PredMSE)
+    out_dict = dict(
+        genes_vae_loss=genes_vae_loss,
+        metab_vae_loss=metab_vae_loss,
+        genes_KLD=genes_KLD,
+        metab_KLD=metab_KLD,
+        PredMSE=PredMSE
+    )
+
+    return out_dict
 
 
 # Create directory for results
-PATH_MODELS = "./res_train"
+PATH_MODELS = "./real_data_analysis/results/res_train_v3"
 
-config_dict = read_config("./config.ini")
+config_dict = read_config("./real_data_analysis/model_genes_metabolomics/config.ini")
 DEVICE = torch.device(config_dict["training_parameters"]["device"])
 N_FOLDS = config_dict["training_parameters"]["n_folds"]
 
@@ -44,9 +58,10 @@ N_FOLDS = config_dict["training_parameters"]["n_folds"]
 # --------------------------------------------------------
 # -------------------- Load data -------------------------
 # --------------------------------------------------------
-dict_arrays, features_to_preprocess = load_and_process_data(config_dict, data_dir="./")
+dict_arrays = load_and_process_data(config_dict, data_dir="./real_data_analysis/data")
 n_individuals = dict_arrays["genes"].shape[0]
-p = dict_arrays["genes"].shape[2]
+p_gene = dict_arrays["genes"].shape[2]
+p_metab = dict_arrays["metabolites"].shape[2]
 p_static = dict_arrays["static_patient_features"].shape[2]
 n_timepoints = dict_arrays["y_target"].shape[2]
 
@@ -54,38 +69,17 @@ n_timepoints = dict_arrays["y_target"].shape[2]
 with open(f"{PATH_MODELS}/all_scalers", "rb") as fp:   # Pickling scalers
     all_scalers = pickle.load(fp)
 
-
-for fold in range(N_FOLDS):
-    print(f"\n -------- FOLD: {fold} --------------")
-    scalers = all_scalers[fold]
-    all_mean = []
-    all_var = []
-    for kk, dd in scalers.items():
-        for k, s in dd.items():
-            all_mean.append(s.mean_)
-            all_var.append(s.var_)
-    print("\n min/max of mean: ", np.array(all_mean).min(), np.array(all_mean).max())
-    print("\n min/max of var: ", np.array(all_var).min(), np.array(all_var).max())
-
-
 all_models = []
 for fold in range(N_FOLDS):
     print(f"Loading model fold {fold+1} of {N_FOLDS}")
 
     PATH = f"{PATH_MODELS}/model_{fold}"
     model = DeltaTimeAttentionVAE(
-        input_dim=p,
-        patient_features_dim=p_static,
+        input_dim_genes=p_gene,
+        input_dim_metab=p_metab,
+        input_patient_features_dim=p_static,
         n_timepoints=n_timepoints,
-        vae_latent_dim=config_dict["model_params"]["latent_dim"],
-        vae_input_to_latent_dim=64,
-        max_len_position_enc=10,
-        transformer_input_dim=config_dict["model_params"]["transformer_input_dim"],
-        transformer_dim_feedforward=config_dict["model_params"]["transformer_dim_feedforward"],
-        nheads=config_dict["model_params"]["n_heads"],
-        dropout=0.1,
-        dropout_attention=0.1,
-        prediction_weight=1.0
+        model_config=config_dict["model_params"]
     ).to(DEVICE)
     model.load_state_dict(torch.load(PATH))
     all_models.append(model)
@@ -93,13 +87,15 @@ for fold in range(N_FOLDS):
 
 # LOSS components
 mse_all_folds = []
-bce_all_folds = []
-attn_weights = []
+genes_loss_all_folds = []
+metab_loss_all_folds = []
+genes_kl_loss = []
+metab_kl_loss = []
 
 for fold in range(N_FOLDS):
     # apply feature preprocessing
     dict_arrays_preproc = preprocess_transform(
-        copy.deepcopy(dict_arrays), all_scalers[fold], features_to_preprocess
+        copy.deepcopy(dict_arrays), all_scalers[fold], config_dict
     )
     # remove last dimension for outcome with only one dimension
     if dict_arrays_preproc["y_target"].shape[-1] == 1:
@@ -127,21 +123,23 @@ for fold in range(N_FOLDS):
         # x_hat, y_hat, mu, logvar
         loss = loss_components(
             m_out=pred,
-            batch=tensor_input
+            batch=tensor_input,
+            model=model
         )
-        mse_all_folds.append(loss["PredMSE"].numpy())
-        bce_all_folds.append(loss["BCE"].numpy())
-
-    attn_weights.append(model.get_attention_weights(tensor_input))
-
-
-print("Average Prediction MSE: ", np.array(mse_all_folds).mean())
-print("Average Reconstruction MSE: ", np.array(bce_all_folds).mean())
+    mse_all_folds.append(loss["PredMSE"].numpy())
+    genes_loss_all_folds.append(loss["genes_vae_loss"].numpy())
+    metab_loss_all_folds.append(loss["metab_vae_loss"].numpy())
+    genes_kl_loss.append(loss["genes_KLD"].numpy())
+    metab_kl_loss.append(loss["metab_KLD"].numpy())
 
 pred_mse = np.array(mse_all_folds).mean(axis=0)
-pred_mse_x = np.array(bce_all_folds).mean(axis=0)
-attn_weights = np.array(attn_weights).mean(axis=0)
+genes_loss = np.array(genes_loss_all_folds).mean(axis=0)
+metab_loss = np.array(metab_loss_all_folds).mean(axis=0)
+genes_kl = np.array(genes_kl_loss).mean(axis=0)
+metab_kl = np.array(metab_kl_loss).mean(axis=0)
 
-# save attention weights
-with open(f"{PATH_MODELS}/attn_weights", "wb") as fp:
-    pickle.dump(attn_weights, fp)
+print("\n Average Prediction MSE: ", pred_mse.mean(axis=0))
+print("\n Average Genes Reconstruction MSE: ", genes_loss.mean())
+print("\n Average Metabolites Reconstruction MSE: ", metab_loss.mean())
+print("\n Average genes KL divergence: ", genes_kl)
+print("\n Average metabolites KL divergence: ", metab_kl)

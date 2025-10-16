@@ -7,7 +7,9 @@ ids = [1, 2, 3, 4, 5, 6, 7, 8]
 p_genes = 10
 p_metab = 5
 gene_names = [f"gene_{i}" for i in range(p_genes)]
-metab_names = [f"metab_{i}" for i in range(p_metab)]
+metab_names = [f"metab_{i}" for i in range(3)]
+metab_names.append("ratio_A")
+metab_names.append("ratio_B")
 
 main_data = []
 for id_num in ids:
@@ -31,7 +33,8 @@ for id_num in ids:
 df_main = pd.DataFrame(main_data, columns=[['ID', 'Visit', 'Meal', 'Time', 'Sex', 'Age', 'BMI', 'TG'] + gene_names + metab_names])
 
 path = "./real_data_analysis/data"
-df_main.to_csv(f"{path}/features_data_ready.csv", index=False, sep=";")
+df_main.to_csv(f"{path}/genomics_data_ready.csv", index=False, sep=";")
+df_main.to_csv(f"{path}/metab_data_ready.csv", index=False, sep=";")
 df_main.to_csv(f"{path}/clinical_data_ready.csv", index=False, sep=";")
 
 genes_names_df = pd.DataFrame({'column_names': gene_names})

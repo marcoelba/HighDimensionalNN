@@ -12,7 +12,6 @@ import matplotlib.pyplot as plt
 from real_data_analysis.utils.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
 from real_data_analysis.utils.features_preprocessing import preprocess_train, preprocess_transform
 from real_data_analysis.utils.prepare_data_for_shap import prepare_data_for_shap
-from real_data_analysis.utils.get_available_datapoints_indeces import get_indeces
 
 from real_data_analysis.model_genes_metabolomics.get_arrays import load_and_process_data
 from real_data_analysis.model_genes_metabolomics.config_reader import read_config
@@ -106,118 +105,74 @@ dict_shap = {key: array for key, array in dict_arrays.items() if key in config_d
 features_combined, features_label_per_folds = prepare_data_for_shap(
     dict_shap,
     all_scalers,
-    config_dict,
-    verbose=False
+    config_dict
 )
-print("\n Shape background_data for SHAP: ", features_combined[0].shape)
+print("Shape background_data for SHAP: ", features_combined[0].shape)
 
-# -----------------------------------------------------------
-# Get model predictions from all background data
-all_predictions = []
-all_ground_truth = []
-for fold in range(N_FOLDS):
-    
-    y_true = features_label_per_folds[fold][-1]
-    y_baseline = features_label_per_folds[fold][-2]
-    all_ground_truth.append(
-        np.concatenate([y_baseline, y_true], axis=-1)
-    )
+# Plot shap waterfall values
+for time_point in range(n_timepoints):
 
-    tensor_input = features_label_per_folds[fold][:-1]
-    model = all_models[fold]
-    model.eval()
+    # Get base values for the explainer - time specific
+    ensemble_model = EnsembleModel(all_models, time_to_explain=time_point)
+    ensemble_model.eval()
     with torch.no_grad():
-        y_pred = model(tensor_input)[2].numpy()
+        predictions = ensemble_model(*features_combined)
+        base_values = predictions.numpy()
+    mean_base_value = np.array(np.array_split(base_values, N_FOLDS, axis=0)).mean()
 
-    all_predictions.append(
-        np.concatenate([y_baseline, y_pred], axis=-1)
-    )
+    genes_shap = all_shap_values[time_point][0][..., -1]  # genes shap
+    metab_shap = all_shap_values[time_point][1][..., -1]  # metabolites shap
+    patient_clin_shap = all_shap_values[time_point][2][..., -1]  # patient shap
+    baseline_shap = all_shap_values[time_point][3][..., -1]  # patient shap
 
-# -----------------------------------------------------------
-# average the predictions over folds before plotting
-target_predictions = np.array(all_predictions).mean(axis=0)
-target_ground_truth = np.array(all_ground_truth).mean(axis=0)
+    # Takes averages
+    mean_genes_shap = np.array(np.array_split(genes_shap, N_FOLDS, axis=0)).mean(axis=0)
+    mean_metab_shap = np.array(np.array_split(metab_shap, N_FOLDS, axis=0)).mean(axis=0)
+    mean_patient_clin_shap = np.array(np.array_split(patient_clin_shap, N_FOLDS, axis=0)).mean(axis=0)
+    mean_baseline_shap = np.array(np.array_split(baseline_shap, N_FOLDS, axis=0)).mean(axis=0)
 
-slice_start = 0
-slice_end = 0
-colors_seq = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
+    genes_data = np.array(np.array_split(features_combined[0], N_FOLDS, axis=0)).mean(axis=0)
+    metab_data = np.array(np.array_split(features_combined[1], N_FOLDS, axis=0)).mean(axis=0)
+    patient_clin_data = np.array(np.array_split(features_combined[2], N_FOLDS, axis=0)).mean(axis=0)
+    baseline_data = np.array(np.array_split(features_combined[3], N_FOLDS, axis=0)).mean(axis=0)
 
-for patient_id in range(n_individuals):
-    # make folder for patient specific plots
-    path_patient_plots = f"{PATH_PLOTS}/patient_{patient_id}"
-    os.makedirs(path_patient_plots, exist_ok = True)
+    # make one array for shap and data
+    mean_shap = np.concatenate([mean_genes_shap, mean_metab_shap, mean_patient_clin_shap, mean_baseline_shap], axis=-1)
+    mean_data = np.concatenate([genes_data, metab_data, patient_clin_data, baseline_data], axis=-1)
 
-    patient_not_na = where_all[patient_id]
-    sum_notna = patient_not_na.sum()
-    slice_end += sum_notna
+    # slice over time
+    slice_start = 0
+    slice_end = 0
+    for patient_id in range(n_individuals):
+        # make folder for patient specific plots
+        path_patient_plots = f"{PATH_PLOTS}/patient_{patient_id}"
 
-    # plot of true and predicted trajectories
-    patient_pred = target_predictions[slice_start:slice_end]
-    patient_ground_truth = target_ground_truth[slice_start:slice_end]
+        patient_not_na = where_all[patient_id]
+        sum_notna = patient_not_na.sum()
+        slice_end += sum_notna
 
-    fig = plt.figure()
-    for meal in range(sum_notna):
-        plt.plot(patient_ground_truth[meal], color=colors_seq[meal])
-        plt.plot(patient_pred[meal], color=colors_seq[meal], linestyle="dashed")
-    plt.xticks(range(0, n_timepoints + 1))
-    plt.xlabel("Time")
-    plt.title("Standardized-log TG")
-    fig.savefig(f"{path_patient_plots}/predicted_y.pdf", format="pdf")
-    plt.close()
+        patient_shap = mean_shap[slice_start:slice_end]
+        patient_data = mean_data[slice_start:slice_end]
+        
+        # Average shap values over multiple meals
+        mean_patient_shap = patient_shap.mean(axis=0)
+        mean_patient_data = patient_data.mean(axis=0)
 
-    slice_start += sum_notna
+        slice_start += sum_notna
 
+        # make shap explanation object
+        explanation = shap.Explanation(
+            values=mean_patient_shap,
+            base_values=mean_base_value,
+            data=mean_patient_data,
+            feature_names=all_features_names
+        )
 
-# -----------------------------------------------------------------------
-# plots in original scale
-
-# inverse-transform
-all_predictions_original = []
-all_ground_truth_original = []
-for fold in range(N_FOLDS):
-    all_predictions_original.append(
-        np.concatenate([
-            all_scalers[fold]["y_baseline"][0].inverse_transform(all_predictions[fold][:, 0:1]),
-            all_scalers[fold]["y_target"][0].inverse_transform(all_predictions[fold][:, 1:])
-        ], axis=1)
-    )
-    all_ground_truth_original.append(
-        np.concatenate([
-            all_scalers[fold]["y_baseline"][0].inverse_transform(all_ground_truth[fold][:, 0:1]),
-            all_scalers[fold]["y_target"][0].inverse_transform(all_ground_truth[fold][:, 1:])
-        ], axis=1)
-    )
-
-target_predictions = np.exp(np.array(all_predictions_original)).mean(axis=0)
-target_ground_truth = np.exp(np.array(all_ground_truth_original)).mean(axis=0)
-
-slice_start = 0
-slice_end = 0
-colors_seq = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
-
-for patient_id in range(n_individuals):
-    # make folder for patient specific plots
-    path_patient_plots = f"{PATH_PLOTS}/patient_{patient_id}"
-    os.makedirs(path_patient_plots, exist_ok = True)
-
-    patient_not_na = where_all[patient_id]
-    sum_notna = patient_not_na.sum()
-    slice_end += sum_notna
-
-    # plot of true and predicted trajectories
-    patient_pred = target_predictions[slice_start:slice_end]
-    patient_ground_truth = target_ground_truth[slice_start:slice_end]
-
-    fig = plt.figure()
-    for meal in range(sum_notna):
-        plt.plot(patient_ground_truth[meal], color=colors_seq[meal])
-        plt.plot(patient_pred[meal], color=colors_seq[meal], linestyle="dashed")
-    plt.xticks(range(0, n_timepoints + 1))
-    plt.xlabel("Time")
-    plt.title("Original scale TG")
-    fig.savefig(f"{path_patient_plots}/original_scale_predicted_y.pdf", format="pdf")
-    plt.close()
-    
-    slice_start += sum_notna
+        fig = plt.figure()
+        shap.plots.waterfall(explanation, show=False, max_display=25)
+        fig.set_size_inches(20, 15)  # change after because waterfall resize the fig
+        # plt.show()
+        fig.savefig(f"{path_patient_plots}/genes_shap_time_{time_point+1}.pdf", format="pdf")
+        plt.close()
 
 print("\n ---------------- END ------------------")

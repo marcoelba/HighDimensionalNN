@@ -6,11 +6,12 @@ import torch.optim as optim
 import pickle
 import os
 import copy
+import matplotlib.pyplot as plt
 
 from real_data_analysis.utils.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
-from real_data_analysis.utils.features_preprocessing import preprocess, preprocess_transform
-from real_data_analysis.utils.get_arrays import load_and_process_data
+from real_data_analysis.utils.features_preprocessing import preprocess_train, preprocess_transform
 
+from real_data_analysis.model_genes_metabolomics.get_arrays import load_and_process_data
 from real_data_analysis.model_genes_metabolomics.config_reader import read_config
 from real_data_analysis.model_genes_metabolomics.full_model import DeltaTimeAttentionVAE
 
@@ -28,11 +29,14 @@ DEVICE = torch.device(config_dict["training_parameters"]["device"])
 # --------------------------------------------------------
 # -------------------- Load data -------------------------
 # --------------------------------------------------------
-dict_arrays, features_to_preprocess = load_and_process_data(config_dict, data_dir="./real_data_analysis/data")
+dict_arrays = load_and_process_data(config_dict, data_dir="./real_data_analysis/data")
 n_individuals = dict_arrays["genes"].shape[0]
-p = dict_arrays["genes"].shape[2]
+p_gene = dict_arrays["genes"].shape[2]
+p_metab = dict_arrays["metabolites"].shape[2]
 p_static = dict_arrays["static_patient_features"].shape[2]
 n_timepoints = dict_arrays["y_target"].shape[2]
+
+print("\n preprocessing dict: ", config_dict["preprocess"])
 
 # ------------- k-fold Cross-Validation -------------
 all_train_losses = []
@@ -59,7 +63,7 @@ for fold in range(config_dict["training_parameters"]["n_folds"]):
     dict_val = {name: arr[train_mask == 0] for name, arr in dict_arrays.items()}
 
     # train and apply feature preprocessing
-    dict_train_preproc, dict_val_preproc, scalers = preprocess(dict_train, dict_val, features_to_preprocess)
+    dict_train_preproc, dict_val_preproc, scalers = preprocess_train(dict_train, dict_val, config_dict)
     all_scalers.append(scalers)
     
     # remove last dimension for outcome with only one dimension
@@ -101,17 +105,11 @@ for fold in range(config_dict["training_parameters"]["n_folds"]):
 
     # ---------------------- Model Setup ----------------------
     model = DeltaTimeAttentionVAE(
-        input_dim=p,
-        patient_features_dim=p_static,
+        input_dim_genes=p_gene,
+        input_dim_metab=p_metab,
+        input_patient_features_dim=p_static,
         n_timepoints=n_timepoints,
-        vae_latent_dim=config_dict["model_params"]["latent_dim"],
-        vae_input_to_latent_dim=64,
-        max_len_position_enc=10,
-        transformer_input_dim=config_dict["model_params"]["transformer_input_dim"],
-        transformer_dim_feedforward=config_dict["model_params"]["transformer_dim_feedforward"],
-        nheads=config_dict["model_params"]["n_heads"],
-        dropout=0.1,
-        dropout_attention=0.1,
+        model_config=config_dict["model_params"]
     ).to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
@@ -135,13 +133,20 @@ for fold in range(config_dict["training_parameters"]["n_folds"]):
     model.eval()
     with torch.no_grad():
         pred = model(val_dataloader.dataset.arrays)
-        all_predictions.append(pred[1].numpy())
-        all_true.append(val_dataloader.dataset.arrays[3].numpy())
+        all_predictions.append(pred[-1].numpy())
+        all_true.append(val_dataloader.dataset.arrays[-1].numpy())
     
     # store
     all_train_losses.append(np.min(trainer.losses["train"]))
     all_val_losses.append(np.min(trainer.losses["val"]))
 
+    # save also plot of train/validation losses for inspection
+    fig = plt.figure()
+    plt.plot(trainer.losses["train"], label="Train")
+    plt.plot(trainer.losses["val"], label="Val")
+    plt.legend()
+    fig.savefig(f"{PATH_MODELS}/train_val_loss_fold_{fold}.pdf", format="pdf")
+    plt.close()
 #
 print("\n ---------------------------------------")
 print(" ---------- Training finished ----------")

@@ -8,18 +8,20 @@ import torch
 import pandas as pd
 import numpy as np
 
-from real_data_analysis.model_use_vae_z.full_model import DeltaTimeAttentionVAE
-from real_data_analysis.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
-from real_data_analysis.features_preprocessing import preprocess, preprocess_transform
+from real_data_analysis.utils.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
+from real_data_analysis.utils.features_preprocessing import preprocess_train, preprocess_transform
+
+from real_data_analysis.model_genes_metabolomics.get_arrays import load_and_process_data
+from real_data_analysis.model_genes_metabolomics.config_reader import read_config
+from real_data_analysis.model_genes_metabolomics.full_model import DeltaTimeAttentionVAE
+
 from src.utils import data_loading_wrappers
-from real_data_analysis.config_reader import read_config
-from real_data_analysis.get_arrays import load_and_process_data
 
 
 # Read config
-PATH_MODELS = "./res_train_v2"
+PATH_MODELS = "./real_data_analysis/results/res_train_v3"
 
-config_dict = read_config("config.ini")
+config_dict = read_config("./real_data_analysis/model_genes_metabolomics/config.ini")
 DEVICE = torch.device(config_dict["training_parameters"]["device"])
 N_FOLDS = config_dict["training_parameters"]["n_folds"]
 FEATURES_KEYS = list(config_dict["preprocess"].keys())[:-1]
@@ -27,9 +29,10 @@ FEATURES_KEYS = list(config_dict["preprocess"].keys())[:-1]
 # --------------------------------------------------------
 # -------------------- Load data -------------------------
 # --------------------------------------------------------
-dict_arrays, features_to_preprocess = load_and_process_data(config_dict, data_dir="./")
+dict_arrays = load_and_process_data(config_dict, data_dir="./real_data_analysis/data")
 n_individuals = dict_arrays["genes"].shape[0]
-p = dict_arrays["genes"].shape[2]
+p_gene = dict_arrays["genes"].shape[2]
+p_metab = dict_arrays["metabolites"].shape[2]
 p_static = dict_arrays["static_patient_features"].shape[2]
 n_timepoints = dict_arrays["y_target"].shape[2]
 
@@ -44,18 +47,11 @@ for fold in range(N_FOLDS):
 
     PATH = f"{PATH_MODELS}/model_{fold}"
     model = DeltaTimeAttentionVAE(
-        input_dim=p,
-        patient_features_dim=p_static,
+        input_dim_genes=p_gene,
+        input_dim_metab=p_metab,
+        input_patient_features_dim=p_static,
         n_timepoints=n_timepoints,
-        vae_latent_dim=config_dict["model_params"]["latent_dim"],
-        vae_input_to_latent_dim=64,
-        max_len_position_enc=10,
-        transformer_input_dim=config_dict["model_params"]["transformer_input_dim"],
-        transformer_dim_feedforward=config_dict["model_params"]["transformer_dim_feedforward"],
-        nheads=config_dict["model_params"]["n_heads"],
-        dropout=0.1,
-        dropout_attention=0.1,
-        prediction_weight=1.0
+        model_config=config_dict["model_params"]
     ).to(DEVICE)
     model.load_state_dict(torch.load(PATH))
     all_models.append(model)
@@ -73,57 +69,9 @@ class EnsembleModel(torch.nn.Module):
         all_outputs = []
         for model in self.models:
             model.eval()
-            output = model(x_list)[1][:, [self.time_to_explain]]
+            output = model(x_list)[2][:, [self.time_to_explain]]
             all_outputs.append(output)
         return torch.stack(all_outputs).mean(dim=0)
-
-# pre-process the input data with all folds scalers at once
-def prepare_data_for_shap(dict_shap, subsample=False, n_background=100, patient_index=None):
-    tensor_input_per_fold = []
-
-    for fold in range(N_FOLDS):
-        # apply feature preprocessing
-        dict_arrays_preproc = preprocess_transform(
-            copy.deepcopy(dict_shap), all_scalers[fold], features_to_preprocess
-        )
-        if dict_arrays_preproc["y_baseline"].shape[-1] == 1:
-            dict_arrays_preproc["y_baseline"] = dict_arrays_preproc["y_baseline"][..., 0]
-
-        if patient_index is not None:
-            tensor_data = [
-                torch.FloatTensor(array[patient_index]).to(DEVICE) for key, array in dict_arrays_preproc.items()
-            ]
-        elif (patient_index is None) and subsample:
-            index = np.random.choice(next(iter(dict_shap.values())).shape[0], n_background, replace=False)
-            tensor_data = [
-                torch.FloatTensor(array[index]).to(DEVICE) for key, array in dict_arrays_preproc.items()
-            ]
-        else:
-            tensor_data = [
-                torch.FloatTensor(array).to(DEVICE) for key, array in dict_arrays_preproc.items()
-            ]
-        
-        # make longitudinal
-        tensor_dataset = data_loading_wrappers.CustomDataset(
-            *tensor_data,
-            reshape=True,
-            remove_missing=True,
-            feature_dimensions=-1,
-            device=DEVICE
-        )
-        tensor_input = tensor_dataset.arrays
-        # append
-        tensor_input_per_fold.append(tensor_input)
-    
-    combined_tensors_per_fold = []
-    for feature in range(len(FEATURES_KEYS)):
-        tensor_feature = []
-        for fold in range(N_FOLDS):
-            tensor_feature.append(tensor_input_per_fold[fold][feature])
-        combined_tensors_per_fold.append(torch.cat(tensor_feature, dim=0))
-    
-    return combined_tensors_per_fold
-
 
 # -------------------------------------------------------------------------
 # ---------------------- Run SHAP explanation -----------------------------
@@ -142,6 +90,6 @@ for time_point in range(n_timepoints):
     shap_values = explainer.shap_values(explain_data)
     all_shap_values.append(shap_values)
 
-# # save shap values ot pickle
-# with open("all_shap_values", "wb") as fp:
-#     pickle.dump(all_shap_values, fp)
+# save shap values to pickle
+with open("all_shap_values", "wb") as fp:
+    pickle.dump(all_shap_values, fp)

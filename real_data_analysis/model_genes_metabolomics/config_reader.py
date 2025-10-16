@@ -16,7 +16,7 @@ def read_config(path_to_config="./config.ini"):
     file_names = dict(config.items('file_names'))
     config_dict['file_names'] = file_names
 
-    # data array - names and features
+    # -------------------- data array - names and features -------------------
     data_arrays = {}
     # array names
     array_names = re.split(r'[;,\s]+', config.get('arrays', 'array_names'))
@@ -28,11 +28,10 @@ def read_config(path_to_config="./config.ini"):
         data_arrays[array] = features
     config_dict['data_arrays'] = data_arrays
     
-    # other column_names
-    common_columns = dict(config.items('common_columns'))
-    config_dict['common_columns'] = common_columns
+    # -------------------- other column_names ----------------------
+    config_dict['shared_columns'] = dict(config.items('shared_columns'))
 
-    # features to preprocess
+    # ---------------- features to preprocess --------------------
     # one list per array
     preprocess_arrays = {}
     for array in array_names:
@@ -42,7 +41,7 @@ def read_config(path_to_config="./config.ini"):
         preprocess_arrays[array] = features
     config_dict['preprocess'] = preprocess_arrays
 
-    # training_parameters
+    # ------------------- training_parameters ---------------------
     config_dict['training_parameters'] = {}
     config_dict['training_parameters']['save_models'] = config.getboolean('training_parameters', 'save_models')
     config_dict['training_parameters']['n_folds'] = config.getint('training_parameters', 'n_folds')
@@ -56,14 +55,16 @@ def read_config(path_to_config="./config.ini"):
     config_dict['training_parameters']['device'] = config.get('training_parameters', 'device')
     # torch.device("cpu")
 
-    # model_params
+    # ---------------- model_params - only floats/integers --------------
     config_dict['model_params'] = {}
-    config_dict['model_params']['vae_metabolomics_latent_dim'] = config.getint('model_params', 'vae_metabolomics_latent_dim')
-    config_dict['model_params']['vae_genomics_latent_dim'] = config.getint('model_params', 'vae_genomics_latent_dim')
-    config_dict['model_params']['transformer_input_dim'] = config.getint('model_params', 'transformer_input_dim')
-    config_dict['model_params']['n_heads'] = config.getint('model_params', 'n_heads')
-    config_dict['model_params']['transformer_dim_feedforward'] = config_dict['model_params']['transformer_input_dim'] * config_dict['model_params']['n_heads']
-    
+
+    floats = dict(config.items('model_params_floats')).keys()
+    for param in floats:
+        config_dict['model_params'][param] = config.getfloat('model_params_floats', param)
+    integers = dict(config.items('model_params_int')).keys()
+    for param in integers:
+        config_dict['model_params'][param] = config.getint('model_params_int', param)
+
     return config_dict
 
 
