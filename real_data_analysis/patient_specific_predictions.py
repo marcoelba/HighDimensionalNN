@@ -188,8 +188,17 @@ for fold in range(N_FOLDS):
         ], axis=1)
     )
 
-target_predictions = np.exp(np.array(all_predictions_original)).mean(axis=0)
-target_ground_truth = np.exp(np.array(all_ground_truth_original)).mean(axis=0)
+
+all_predictions_original = np.exp(np.array(all_predictions_original))
+all_ground_truth_original = np.exp(np.array(all_ground_truth_original))
+
+target_predictions = all_predictions_original.mean(axis=0)
+target_ground_truth = all_ground_truth_original.mean(axis=0)
+
+# Calculate summary statistics and save
+rmse = np.sqrt(np.square(target_predictions[..., 1:] - target_ground_truth[..., 1:]).mean())
+print("RMSE predictions: ", rmse)
+pd.DataFrame(np.array([rmse]), columns=["RMSE"])
 
 slice_start = 0
 slice_end = 0

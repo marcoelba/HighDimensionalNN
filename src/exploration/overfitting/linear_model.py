@@ -11,14 +11,10 @@ from scipy.stats import pearsonr
 import matplotlib.pyplot as plt
 import shap
 
-import os
-os.chdir("./src")
-
-from utils import training_wrapper
-
-from utils import data_loading_wrappers
-from utils.model_output_details import count_parameters
-from utils import plots
+from src.utils import training_wrapper
+from src.utils import data_loading_wrappers
+from src.utils.model_output_details import count_parameters
+from src.utils import plots
 
 
 torch.get_num_threads()
@@ -80,7 +76,7 @@ beta = np.random.choice(
 
 X = np.random.randn(n, p)
 np.round(np.cov(X, rowvar=False), 2)
-cov_matrix = np.ones([p, p]) * 0.5
+cov_matrix = np.ones([p, p]) * 0.6
 np.fill_diagonal(cov_matrix, 1.)
 X = X.dot(np.linalg.cholesky(cov_matrix).transpose())
 np.round(np.cov(X, rowvar=False), 2)
@@ -121,7 +117,7 @@ optimizer = optim.Adam(model_nn.parameters(), lr=1e-3)
 count_parameters(model_nn)
 
 # Training Loop
-num_epochs = 300
+num_epochs = 500
 
 trainer = training_wrapper.Training(train_dataloader, val_dataloader)
 trainer.training_loop(model_nn, optimizer, num_epochs)
@@ -200,52 +196,28 @@ shap_values = shap_values[..., -1]
 
 shap.summary_plot(shap_values, background_data[0], show = True)
 
-shap.waterfall_plot(shap_values[0])
 shap.summary_plot(shap_values, background_data[0], plot_type="bar")
 
 # Get base values for the explainer
 model_shap.eval()
 with torch.no_grad():
     predictions = model_shap(*background_data)
-    base_value = predictions.numpy()
+    base_value = predictions.numpy().mean()
 
 feat_names = [f"f_{ii}" for ii in range(p)]
 
 # Create Explanation object manually
+ind = 0
 explanation = shap.Explanation(
-    values=shap_values[0],  # For single output
-    base_values=base_value[0],
-    data=background_data[0][0].numpy(),  # Flatten if needed
+    values=shap_values[ind],  # For single output
+    base_values=base_value,
+    data=background_data[ind][0].numpy(),  # Flatten if needed
     feature_names=feat_names
 )
 
 [W, beta]
-background_data[0][0]
+background_data[ind][0]
 shap.plots.waterfall(explanation)
-
-
-# -----------------------------------------------------------------
-# Use the 'interventional' approach with correlation-aware sampling
-def model_perm(x_array):
-    tensors_list = []
-    tensors_list.append(torch.tensor(x_array))
-
-    model_nn.eval()
-    with torch.no_grad():
-        pred = model_nn(tensors_list).numpy()
-    return pred
-
-
-array_data = tensor_data_train[0].numpy()
-model_perm(array_data)
-
-explainer = shap.explainers.Permutation(
-    model_perm,
-    array_data,
-    feature_perturbation='interventional',  # Accounts for correlations
-    dtype=np.float32
-)
-shap_values_int = explainer(array_data)
 
 # -------------------------------------------------------
 # ----------- Now removing 2 key predictors -------------

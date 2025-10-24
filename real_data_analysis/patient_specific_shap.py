@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 from real_data_analysis.utils.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
 from real_data_analysis.utils.features_preprocessing import preprocess_train, preprocess_transform
 from real_data_analysis.utils.prepare_data_for_shap import prepare_data_for_shap
+from real_data_analysis.utils.get_available_datapoints_indeces import get_indeces
 
 from real_data_analysis.model_genes_metabolomics.get_arrays import load_and_process_data
 from real_data_analysis.model_genes_metabolomics.config_reader import read_config
@@ -22,7 +23,7 @@ from src.utils import data_loading_wrappers
 
 # Read config
 PATH_MODELS = "./real_data_analysis/results/res_train_v3"
-PATH_PLOTS = "plots_patient_shap"
+PATH_PLOTS = "plots_patient_shap_rescale"
 os.makedirs(PATH_PLOTS, exist_ok = True)
 
 config_dict = read_config("./real_data_analysis/model_genes_metabolomics/config.ini")
@@ -81,21 +82,46 @@ for fold in range(N_FOLDS):
     model.load_state_dict(torch.load(PATH))
     all_models.append(model)
 
+
+class TorchScaler:
+    def __init__(self, scaler, dtype=torch.float32):
+        self.mean = torch.tensor(scaler.mean_, dtype=dtype)
+        self.scale = torch.tensor(scaler.scale_, dtype=dtype)
+
+    def transform(self, x):
+        """
+            x: torch.Tensor
+        """
+        return (x - self.mean) / self.scale
+
+    def inverse_transform(self, x):
+        """
+            x: torch.Tensor
+        """
+        return x * self.scale + self.mean
+
+
 # Define a Torch ensemble model that takes in input a list of models
 class EnsembleModel(torch.nn.Module):
-    def __init__(self, model_list, time_to_explain):
+    def __init__(self, model_list, time_to_explain, torch_scalers_outcome=None):
         super(EnsembleModel, self).__init__()
         self.models = torch.nn.ModuleList(model_list)
         self.time_to_explain = time_to_explain
+        self.torch_scalers_outcome = torch_scalers_outcome
 
     def forward(self, *x):
         x_list = list(x)
         all_outputs = []
-        for model in self.models:
+        for fold, model in enumerate(self.models):
             model.eval()
             output = model(x_list)[2][:, [self.time_to_explain]]
+            # transform output back to original scale
+            if self.torch_scalers_outcome is not None:
+                output = self.torch_scalers_outcome[fold].inverse_transform(output)
+                output = torch.exp(output)
             all_outputs.append(output)
         return torch.stack(all_outputs).mean(dim=0)
+
 
 # -------------------------------------------------------------------------
 # ---------------------- Run SHAP explanation -----------------------------
@@ -109,11 +135,13 @@ features_combined, features_label_per_folds = prepare_data_for_shap(
 )
 print("Shape background_data for SHAP: ", features_combined[0].shape)
 
+torch_scalers_outcome = [TorchScaler(all_scalers[fold]['y_target'][0]) for fold in range(N_FOLDS)]
+
 # Plot shap waterfall values
 for time_point in range(n_timepoints):
 
     # Get base values for the explainer - time specific
-    ensemble_model = EnsembleModel(all_models, time_to_explain=time_point)
+    ensemble_model = EnsembleModel(all_models, time_to_explain=time_point, torch_scalers_outcome=torch_scalers_outcome)
     ensemble_model.eval()
     with torch.no_grad():
         predictions = ensemble_model(*features_combined)
@@ -131,6 +159,7 @@ for time_point in range(n_timepoints):
     mean_patient_clin_shap = np.array(np.array_split(patient_clin_shap, N_FOLDS, axis=0)).mean(axis=0)
     mean_baseline_shap = np.array(np.array_split(baseline_shap, N_FOLDS, axis=0)).mean(axis=0)
 
+    # data
     genes_data = np.array(np.array_split(features_combined[0], N_FOLDS, axis=0)).mean(axis=0)
     metab_data = np.array(np.array_split(features_combined[1], N_FOLDS, axis=0)).mean(axis=0)
     patient_clin_data = np.array(np.array_split(features_combined[2], N_FOLDS, axis=0)).mean(axis=0)
@@ -146,17 +175,24 @@ for time_point in range(n_timepoints):
     for patient_id in range(n_individuals):
         # make folder for patient specific plots
         path_patient_plots = f"{PATH_PLOTS}/patient_{patient_id}"
+        os.makedirs(path_patient_plots, exist_ok = True)
 
         patient_not_na = where_all[patient_id]
         sum_notna = patient_not_na.sum()
         slice_end += sum_notna
 
+        mean_patient_data = np.concatenate([
+            dict_arrays["genes"][patient_id][patient_not_na==1].mean(axis=0).squeeze(),
+            dict_arrays["metabolites"][patient_id][patient_not_na==1].mean(axis=0).squeeze(),
+            dict_arrays["static_patient_features"][patient_id][patient_not_na==1].mean(axis=0).squeeze(),
+            np.exp(dict_arrays["y_baseline"][patient_id][patient_not_na==1]).mean(axis=0)[..., -1],
+        ])
         patient_shap = mean_shap[slice_start:slice_end]
-        patient_data = mean_data[slice_start:slice_end]
+        # patient_data = mean_data[slice_start:slice_end]
         
         # Average shap values over multiple meals
         mean_patient_shap = patient_shap.mean(axis=0)
-        mean_patient_data = patient_data.mean(axis=0)
+        # mean_patient_data = patient_data.mean(axis=0)
 
         slice_start += sum_notna
 

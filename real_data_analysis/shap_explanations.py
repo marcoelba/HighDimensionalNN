@@ -10,6 +10,7 @@ import numpy as np
 
 from real_data_analysis.utils.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
 from real_data_analysis.utils.features_preprocessing import preprocess_train, preprocess_transform
+from real_data_analysis.utils.prepare_data_for_shap import prepare_data_for_shap
 
 from real_data_analysis.model_genes_metabolomics.get_arrays import load_and_process_data
 from real_data_analysis.model_genes_metabolomics.config_reader import read_config
@@ -57,36 +58,68 @@ for fold in range(N_FOLDS):
     all_models.append(model)
 
 
+class TorchScaler:
+    def __init__(self, scaler, dtype=torch.float32):
+        self.mean = torch.tensor(scaler.mean_, dtype=dtype)
+        self.scale = torch.tensor(scaler.scale_, dtype=dtype)
+
+    def transform(self, x):
+        """
+            x: torch.Tensor
+        """
+        return (x - self.mean) / self.scale
+
+    def inverse_transform(self, x):
+        """
+            x: torch.Tensor
+        """
+        return x * self.scale + self.mean
+
+
 # Define a Torch ensemble model that takes in input a list of models
 class EnsembleModel(torch.nn.Module):
-    def __init__(self, model_list, time_to_explain):
+    def __init__(self, model_list, time_to_explain, torch_scalers_outcome=None):
         super(EnsembleModel, self).__init__()
         self.models = torch.nn.ModuleList(model_list)
         self.time_to_explain = time_to_explain
+        self.torch_scalers_outcome = torch_scalers_outcome
 
     def forward(self, *x):
         x_list = list(x)
         all_outputs = []
-        for model in self.models:
+        for fold, model in enumerate(self.models):
             model.eval()
             output = model(x_list)[2][:, [self.time_to_explain]]
+            # transform output back to original scale
+            if self.torch_scalers_outcome is not None:
+                output = self.torch_scalers_outcome[fold].inverse_transform(output)
+                output = torch.exp(output)
             all_outputs.append(output)
         return torch.stack(all_outputs).mean(dim=0)
+
 
 # -------------------------------------------------------------------------
 # ---------------------- Run SHAP explanation -----------------------------
 # -------------------------------------------------------------------------
 print("---------------- Running SHAP ---------------")
-dict_shap = {key: array for key, array in dict_arrays.items() if key in FEATURES_KEYS}
-background_data = prepare_data_for_shap(dict_shap, subsample=False)
-print("Shape background_data for SHAP: ", background_data[0].shape)
-explain_data = prepare_data_for_shap(dict_shap, subsample=False)
+dict_shap = {key: array for key, array in dict_arrays.items() if key in config_dict["data_arrays"].keys()}
+features_combined, features_label_per_folds = prepare_data_for_shap(
+    dict_shap,
+    all_scalers,
+    config_dict,
+    verbose=False
+)
+print("Shape background_data for SHAP: ", features_combined[0].shape)
+explain_data = features_combined
 print("Shape explain data for SHAP: ", explain_data[0].shape)
+
+torch_scalers_outcome = [TorchScaler(all_scalers[fold]['y_target'][0]) for fold in range(N_FOLDS)]
+# torch_scalers_outcome[0].inverse_transform
 
 all_shap_values = []
 for time_point in range(n_timepoints):
-    ensemble_model = EnsembleModel(all_models, time_to_explain=time_point)
-    explainer = shap.GradientExplainer(ensemble_model, background_data)
+    ensemble_model = EnsembleModel(all_models, time_to_explain=time_point, torch_scalers_outcome=torch_scalers_outcome)
+    explainer = shap.GradientExplainer(ensemble_model, features_combined)
     shap_values = explainer.shap_values(explain_data)
     all_shap_values.append(shap_values)
 

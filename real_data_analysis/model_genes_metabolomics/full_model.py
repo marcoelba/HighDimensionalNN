@@ -205,7 +205,14 @@ class DeltaTimeAttentionVAE(nn.Module):
         # label prediction loss
         PredMSE = nn.functional.mse_loss(m_out[-1], batch[-1], reduction='sum')
 
-        return genes_vae_loss + metab_vae_loss + genes_KLD + metab_KLD + PredMSE
+        loss_output = [
+            genes_vae_loss,
+            metab_vae_loss,
+            self.model_config["kl_weight"] * genes_KLD,
+            self.model_config["kl_weight"] * metab_KLD,
+            PredMSE
+        ]
+        return loss_output
     
     def get_attention_weights(self, batch):
         """

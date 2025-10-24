@@ -147,6 +147,15 @@ for fold in range(config_dict["training_parameters"]["n_folds"]):
     plt.legend()
     fig.savefig(f"{PATH_MODELS}/train_val_loss_fold_{fold}.pdf", format="pdf")
     plt.close()
+
+    # only prediction loss
+    fig = plt.figure()
+    plt.plot(trainer.losses["train_pred"], label="Train")
+    plt.plot(trainer.losses["val_pred"], label="Val")
+    plt.legend()
+    fig.savefig(f"{PATH_MODELS}/train_val_prediction_loss_fold_{fold}.pdf", format="pdf")
+    plt.close()
+
 #
 print("\n ---------------------------------------")
 print(" ---------- Training finished ----------")
