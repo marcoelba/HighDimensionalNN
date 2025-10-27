@@ -48,7 +48,7 @@ class NNModel(nn.Module):
 
     def loss(self, m_out, batch):
         # label prediction loss
-        return nn.functional.mse_loss(m_out, batch[1], reduction='sum')
+        return [nn.functional.mse_loss(m_out, batch[1], reduction='sum')]
 
 
 def softplus_inverse(y):
@@ -79,6 +79,7 @@ X = X.dot(np.linalg.cholesky(cov_matrix).transpose())
 np.round(np.cov(X, rowvar=False), 2)
 y = np.dot(X, W) + np.random.randn(n) * 0.6
 y = softplus(y)
+
 y = y[..., None]
 
 plt.hist(y)
@@ -87,6 +88,10 @@ plt.show()
 plt.hist(softplus_inverse(y))
 plt.show()
 
+
+# ----------- Introduce random covariates --------------
+X = np.concatenate([X, np.random.randn(n, 5)], axis=1)
+X.shape
 
 # ------------------ OLS ---------------------
 W
@@ -183,7 +188,7 @@ preproc_val_dataloader = data_loading_wrappers.make_data_loader(*preproc_tensor_
 
 # 4. Training Setup
 device = torch.device("cpu")
-model_nn = NNModel(p, ldim=10, dropout_prob=0.2).to(device)
+model_nn = NNModel(X.shape[1], ldim=10, dropout_prob=0.2).to(device)
 optimizer = optim.Adam(model_nn.parameters(), lr=1e-3)
 
 # Coefficients
@@ -240,7 +245,7 @@ with torch.no_grad():
     predictions_background = model_shap(background_data)
     base_value = predictions_background.numpy().mean()
 
-feat_names = [f"f_{ii}" for ii in range(p)]
+feat_names = [f"f_{ii}" for ii in range(X.shape[1])]
 
 # model predictions on test data
 model_shap.eval()
@@ -296,7 +301,7 @@ class TensorModelRescaled(torch.nn.Module):
         if self.torch_scaler_outcome is not None:
             output = self.torch_scaler_outcome.inverse_transform(output)
         # inverse-log transformation
-        output = torch_softplus(output)
+        # output = torch_softplus(output)
         return output
 
 model_shap_rescaled = TensorModelRescaled(

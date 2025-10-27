@@ -59,22 +59,18 @@ n_test = 200
 n_val = 200
 n = n_train + n_val + n_test
 p = 10
-p1 = 5
-p0 = 5
+p1 = 8
+p0 = 2
 batch_size = 50
 
 # custom W
 np.random.seed(323425)
 W = np.random.choice(
-    [-1, -0.8, -0.5, 1, 0.8, 0.5],
-    size=(p1)
-)
-beta = np.random.choice(
-    [-1, 1],
-    size=(p0)
+    [-1, -0.8, 1, 0.8],
+    size=(p)
 )
 
-X = np.random.randn(n, p)
+X = np.random.randn(n, p1)
 np.round(np.cov(X, rowvar=False), 2)
 cov_matrix = np.ones([p, p]) * 0.6
 np.fill_diagonal(cov_matrix, 1.)
@@ -89,7 +85,7 @@ y_tensor = torch.FloatTensor(y).to(torch.device("cpu"))
 
 # split data
 data_split = data_loading_wrappers.DataSplit(X.shape[0], test_size=n_test, val_size=n_val)
-print("train: ", len(data_split.train_index), 
+print("train: ", len(data_split.train_index),
     "val: ", len(data_split.val_index),
     "test: ", len(data_split.test_index)
 )
@@ -345,3 +341,17 @@ shap.plots.heatmap(shap.Explanation(
     feature_names=feature_names
     )
 )
+
+#############
+n = 100
+x = np.random.beta(1, 5, n)
+plt.hist(x)
+plt.show()
+
+x_std = (x - x.mean()) / x.std()
+plt.hist(x_std)
+plt.show()
+
+
+
+#############

@@ -14,19 +14,19 @@ from real_data_analysis.utils.features_preprocessing import preprocess_train, pr
 from real_data_analysis.utils.prepare_data_for_shap import prepare_data_for_shap
 from real_data_analysis.utils.get_available_datapoints_indeces import get_indeces
 
-from real_data_analysis.model_genes_metabolomics.get_arrays import load_and_process_data
-from real_data_analysis.model_genes_metabolomics.config_reader import read_config
-from real_data_analysis.model_genes_metabolomics.full_model import DeltaTimeAttentionVAE
+from real_data_analysis.model_genes_metabolomics_no_vae.get_arrays import load_and_process_data
+from real_data_analysis.model_genes_metabolomics_no_vae.config_reader import read_config
+from real_data_analysis.model_genes_metabolomics_no_vae.full_model import DeltaTimeAttentionVAE
 
 from src.utils import data_loading_wrappers
 
 
 # Read config
-PATH_MODELS = "./real_data_analysis/results/res_train_v3"
+PATH_MODELS = "./real_data_analysis/results/res_train_v4_no_vae"
 PATH_PLOTS = "plots_patient_shap"
 os.makedirs(PATH_PLOTS, exist_ok = True)
 
-config_dict = read_config("./real_data_analysis/model_genes_metabolomics/config.ini")
+config_dict = read_config("./real_data_analysis/model_genes_metabolomics_no_vae/config.ini")
 DEVICE = torch.device(config_dict["training_parameters"]["device"])
 N_FOLDS = config_dict["training_parameters"]["n_folds"]
 FEATURES_KEYS = list(config_dict["preprocess"].keys())[:-1]
