@@ -86,6 +86,7 @@ data/
 *.json
 *.npz
 *.npy
+real_data_analysis/results/
 
 # draw.io hidden files
 *.drawio.bkp

@@ -13,7 +13,7 @@ def plot_attention_weights(attn_weights, observation, layer_name="Attention"):
     batch_size, nhead, seq_len, _ = attn_weights.shape
     
     # Use weights from first batch element
-    weights = attn_weights[observation].detach().cpu().numpy()
+    weights = attn_weights[observation]
     
     # Create subplot grid
     fig, axes = plt.subplots(1, nhead, figsize=(4 * nhead, 4))

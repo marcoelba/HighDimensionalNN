@@ -40,7 +40,7 @@ n_timepoints = 5
 n_measurements = 4
 p_static = 3
 p_interventions = 0
-batch_size = 50
+batch_size = 100
 
 # custom W
 np.random.seed(323425)
@@ -69,13 +69,14 @@ dict_gen = data_generation.multi_longitudinal_data_generation(
     beta=beta,
     beta_time=beta_time,
     beta_interventions=beta_interventions,
-    beta_static=beta_static
+    beta_static=beta_static,
+    missing_prob=0.3
 )
 
 y = dict_gen["y"]
 X = dict_gen["X"]
 X_static = dict_gen["X_static"]
-X_interventions = dict_gen["X_interventions"]
+# X_interventions = dict_gen["X_interventions"]
 Z = dict_gen["Z"]
 
 # y0 (y at baseline) is actually an additional feature, because it is measured before any intervention
@@ -86,9 +87,10 @@ y_baseline.shape
 y_target = y[:, :, 1:]
 y_target.shape
 
+n_timepoints = n_timepoints -1
+
 # get tensors
 X_tensor = torch.FloatTensor(X).to(torch.device("cpu"))
-Z_tensor = torch.FloatTensor(Z).to(torch.device("cpu"))
 X_static_tensor = torch.FloatTensor(X_static).to(torch.device("cpu"))
 y_target_tensor = torch.FloatTensor(y_target).to(torch.device("cpu"))
 y_baseline_tensor = torch.FloatTensor(y_baseline).to(torch.device("cpu"))
@@ -105,9 +107,18 @@ tensor_data_test = data_split.get_test(X_tensor, X_static_tensor, y_baseline_ten
 tensor_data_val = data_split.get_val(X_tensor, X_static_tensor, y_baseline_tensor, y_target_tensor)
 
 # make tensor data loaders
-train_dataloader = data_loading_wrappers.make_data_loader(*tensor_data_train, batch_size=batch_size)
-test_dataloader = data_loading_wrappers.make_data_loader(*tensor_data_test, batch_size=batch_size)
-val_dataloader = data_loading_wrappers.make_data_loader(*tensor_data_val, batch_size=batch_size)
+reshape = True
+drop_missing = True
+
+train_dataloader = data_loading_wrappers.make_data_loader(
+    *tensor_data_train, batch_size=batch_size, feature_dimensions=-1, reshape=reshape, drop_missing=drop_missing
+)
+test_dataloader = data_loading_wrappers.make_data_loader(
+    *tensor_data_test, batch_size=batch_size, feature_dimensions=-1, reshape=reshape, drop_missing=drop_missing
+)
+val_dataloader = data_loading_wrappers.make_data_loader(
+    *tensor_data_val, batch_size=batch_size, feature_dimensions=-1, reshape=reshape, drop_missing=drop_missing
+)
 
 
 # 4. Training Setup
@@ -122,7 +133,7 @@ transformer_dim_feedforward = transformer_input_dim * 4
 model = DeltaTimeAttentionVAE(
     input_dim=p,
     patient_features_dim=p_static,
-    n_timepoints=n_timepoints-1,
+    n_timepoints=n_timepoints,
     vae_latent_dim=latent_dim,
     vae_input_to_latent_dim=64,
     max_len_position_enc=10,
@@ -137,8 +148,55 @@ optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
 count_parameters(model)
 
+
+# Details
+batch = next(iter(train_dataloader))
+# ------------------ process input batch ------------------
+x, y_baseline, patients_static_features = model.preprocess_input(batch)
+x.shape
+y_baseline.shape
+patients_static_features.shape
+
+# ---------------------------- VAE ----------------------------
+x_hat, mu, logvar = model.vae(x)
+x_hat.shape
+mu.shape
+
+# --------------------- Concat Static fatures ----------------------
+h = torch.cat([x_hat, y_baseline], dim=-1)
+h.shape
+
+# ------ positional encoding and projection ------
+h_exp = model.expand_input_in_time(h)
+h_exp.shape
+
+# --------------- Projection to transformer input dimension -----------
+h_in = model.projection_to_transformer(h_exp)
+h_in.shape
+
+# -------- Generate FiLM parameters γ and β from static patient features --------
+h_mod = model.film_generator(patients_static_features, h_in)
+h_mod.shape
+
+# --------------------- Time positional embedding ---------------------
+h_time = model.pos_encoder(h_mod)
+h_time.shape
+
+# ----------------------- Transformer ------------------------------
+h_out = model.transformer_module(h_time, attn_mask=model.causal_mask)
+h_out.shape
+
+# --------------------- Predict outcomes ---------------------
+y_hat = model.outcome_prediction(h_out)
+y_hat.shape
+
+m_out = model(batch)
+model.loss(m_out, batch)
+m_out[1].shape
+batch[3].shape
+
 # ----------- Training Loop -----------
-num_epochs = 500
+num_epochs = 200
 
 trainer = training_wrapper.Training(train_dataloader, val_dataloader)
 
@@ -152,3 +210,5 @@ plt.hlines(np.min(trainer.losses["val"]), 0, len(trainer.losses["val"]), color="
 plt.hlines(np.min(trainer.losses["train"]), 0, len(trainer.losses["val"]), color="blue", linestyles="--")
 plt.legend()
 plt.show()
+
+model.get_attention_weights(tensor_data_train)

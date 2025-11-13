@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from vae_attention.modules.multi_head_attention_layer import MultiHeadCrossAttentionWithWeights
+from .multi_head_attention_layer import MultiHeadCrossAttentionWithWeights
 
 
 # Standard TransformerEncoderLayer
