@@ -12,6 +12,9 @@ def read_config(path_to_config="./config.ini"):
 
     config_dict = dict()
 
+    # script specific parameters
+    config_dict['script_parameters'] = dict(config.items('script_parameters'))
+
     # data files
     file_names = dict(config.items('file_names'))
     config_dict['file_names'] = file_names

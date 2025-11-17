@@ -3,11 +3,7 @@ import pickle
 import os
 import copy
 from pathlib import Path
-
-current_path = Path(os.curdir)
-SubDeskTop = Path.joinpath(Desktop, "subdir")
-os.path.abspath("./")
-script_dir = Path(__file__).resolve().parent
+import argparse
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -15,29 +11,39 @@ import pandas as pd
 import torch
 import torch.optim as optim
 
-from real_data_analysis.utils.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
-from real_data_analysis.utils.features_preprocessing import preprocess_train, preprocess_transform
-
-
-from real_data_analysis.model_genes_metabolomics_no_vae.get_arrays import load_and_process_data
-from real_data_analysis.model_genes_metabolomics_no_vae.config_reader import read_config
-from real_data_analysis.model_genes_metabolomics_no_vae.full_model import DeltaTimeAttentionVAE
-
+from src.utils.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
+from src.utils.features_preprocessing import preprocess_train, preprocess_transform
+from src.utils.config_reader import read_config
+from src.utils.get_arrays import load_and_process_data
 from src.utils import training_wrapper
 from src.utils import data_loading_wrappers
 
+# Script specific modules
+# Must be in the same directory where model_fitting.py is run
+from full_model import DeltaTimeAttentionVAE
 
-# Read config
-PATH_MODELS = "./real_data_analysis/results/res_train_v4_no_vae"
-os.makedirs(PATH_MODELS, exist_ok = True)
 
-config_dict = read_config("./real_data_analysis/model_genes_metabolomics_no_vae/config.ini")
+# read input arguments from console
+parser = argparse.ArgumentParser(description='Run program with custom config and modules')
+parser.add_argument('-c', '--config', required=True, help='Path to config.ini file')
+args = parser.parse_args()
+
+# Load config file
+config_path = Path(args.config)
+if not config_path.exists():
+    print(f"Error: Config file not found: {config_path}")
+    sys.exit(1)
+config_dict = read_config(config_path)
+
+PATH_RESULTS = config_dict["script_parameters"]["results_folder"]
+PATH_DATA = config_dict["script_parameters"]["data_folder"]
 DEVICE = torch.device(config_dict["training_parameters"]["device"])
+os.makedirs(PATH_RESULTS, exist_ok = True)
 
 # --------------------------------------------------------
 # -------------------- Load data -------------------------
 # --------------------------------------------------------
-dict_arrays = load_and_process_data(config_dict, data_dir="./real_data_analysis/data")
+dict_arrays = load_and_process_data(config_dict, data_dir=PATH_DATA)
 n_individuals = dict_arrays["genes"].shape[0]
 p_gene = dict_arrays["genes"].shape[2]
 p_metab = dict_arrays["metabolites"].shape[2]
@@ -131,7 +137,7 @@ for fold in range(config_dict["training_parameters"]["n_folds"]):
 
     # save model?
     if config_dict["training_parameters"]["save_models"]:
-        PATH = f"{PATH_MODELS}/model_{fold}"
+        PATH = f"{PATH_RESULTS}/model_{fold}"
         torch.save(model.state_dict(), PATH)
 
     all_models.append(model)
@@ -153,7 +159,7 @@ for fold in range(config_dict["training_parameters"]["n_folds"]):
     plt.plot(trainer.losses["train"], label="Train")
     plt.plot(trainer.losses["val"], label="Val")
     plt.legend()
-    fig.savefig(f"{PATH_MODELS}/train_val_loss_fold_{fold}.pdf", format="pdf")
+    fig.savefig(f"{PATH_RESULTS}/train_val_loss_fold_{fold}.pdf", format="pdf")
     plt.close()
 
     # only prediction loss
@@ -161,7 +167,7 @@ for fold in range(config_dict["training_parameters"]["n_folds"]):
     plt.plot(trainer.losses["train_pred"], label="Train")
     plt.plot(trainer.losses["val_pred"], label="Val")
     plt.legend()
-    fig.savefig(f"{PATH_MODELS}/train_val_prediction_loss_fold_{fold}.pdf", format="pdf")
+    fig.savefig(f"{PATH_RESULTS}/train_val_prediction_loss_fold_{fold}.pdf", format="pdf")
     plt.close()
 
 #
@@ -178,17 +184,17 @@ ground_truth = np.concatenate(all_true, axis=0)
 ground_truth.shape
 
 # save to pickle files
-with open(f"{PATH_MODELS}/predictions", "wb") as fp:   # Pickling predictions
+with open(f"{PATH_RESULTS}/predictions", "wb") as fp:   # Pickling predictions
     pickle.dump(predictions, fp)
-with open(f"{PATH_MODELS}/ground_truth", "wb") as fp:   # Pickling ground truth
+with open(f"{PATH_RESULTS}/ground_truth", "wb") as fp:   # Pickling ground truth
     pickle.dump(ground_truth, fp)
-with open(f"{PATH_MODELS}/best_epochs", "wb") as fp:   # Pickling best epochs
+with open(f"{PATH_RESULTS}/best_epochs", "wb") as fp:   # Pickling best epochs
     pickle.dump(all_best_epochs, fp)
-with open(f"{PATH_MODELS}/all_train_losses", "wb") as fp:   # Pickling train losses
+with open(f"{PATH_RESULTS}/all_train_losses", "wb") as fp:   # Pickling train losses
     pickle.dump(all_train_losses, fp)
-with open(f"{PATH_MODELS}/all_val_losses", "wb") as fp:   # Pickling val losses
+with open(f"{PATH_RESULTS}/all_val_losses", "wb") as fp:   # Pickling val losses
     pickle.dump(all_val_losses, fp)
-with open(f"{PATH_MODELS}/all_scalers", "wb") as fp:   # Pickling scalers
+with open(f"{PATH_RESULTS}/all_scalers", "wb") as fp:   # Pickling scalers
     pickle.dump(all_scalers, fp)
 
 print("\n ---------------------------------------")

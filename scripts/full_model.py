@@ -7,9 +7,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.vae_attention.modules.transformer import TransformerEncoderLayerWithWeights
-from src.vae_attention.modules.sinusoidal_position_encoder import SinusoidalPositionalEncoding
-from src.vae_attention.modules.vae import VAE
+from src.modules.transformer import TransformerEncoderLayerWithWeights
+from src.modules.sinusoidal_position_encoder import SinusoidalPositionalEncoding
 
 
 class DeltaTimeAttentionVAE(nn.Module):
