@@ -1,7 +1,7 @@
 import copy
 import torch
 
-from real_data_analysis.utils.features_preprocessing import preprocess_transform
+from src.utils.features_preprocessing import preprocess_transform
 from src.utils import data_loading_wrappers
 
 

@@ -2,6 +2,8 @@
 import pickle
 import os
 import copy
+from pathlib import Path
+import argparse
 
 import shap
 import torch
@@ -9,32 +11,44 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-from real_data_analysis.utils.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
-from real_data_analysis.utils.features_preprocessing import preprocess_train, preprocess_transform
-from real_data_analysis.utils.prepare_data_for_shap import prepare_data_for_shap
-from real_data_analysis.utils.get_available_datapoints_indeces import get_indeces
-
-from real_data_analysis.model_genes_metabolomics_no_vae.get_arrays import load_and_process_data
-from real_data_analysis.model_genes_metabolomics_no_vae.config_reader import read_config
-from real_data_analysis.model_genes_metabolomics_no_vae.full_model import DeltaTimeAttentionVAE
-
+from src.utils.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
+from src.utils.features_preprocessing import preprocess_train, preprocess_transform
+from src.utils.config_reader import read_config
+from src.utils.get_arrays import load_and_process_data
+from src.utils.prepare_data_for_shap import prepare_data_for_shap
 from src.utils import data_loading_wrappers
+from src.utils.get_available_datapoints_indeces import get_indeces
+
+# Script specific modules
+# Must be in the same directory where model_fitting.py is run
+from full_model import DeltaTimeAttentionVAE
 
 
-# Read config
-PATH_MODELS = "./real_data_analysis/results/res_train_v4_no_vae"
-PATH_PLOTS = "plots_patient_shap"
-os.makedirs(PATH_PLOTS, exist_ok = True)
+# read input arguments from console
+parser = argparse.ArgumentParser(description='Run program with custom config and modules')
+parser.add_argument('-c', '--config', required=True, help='Path to config.ini file')
+args = parser.parse_args()
 
-config_dict = read_config("./real_data_analysis/model_genes_metabolomics_no_vae/config.ini")
+# Load config file
+config_path = Path(args.config)
+if not config_path.exists():
+    print(f"Error: Config file not found: {config_path}")
+    sys.exit(1)
+config_dict = read_config(config_path)
+
+PATH_RESULTS = config_dict["script_parameters"]["results_folder"]
+PATH_DATA = config_dict["script_parameters"]["data_folder"]
 DEVICE = torch.device(config_dict["training_parameters"]["device"])
 N_FOLDS = config_dict["training_parameters"]["n_folds"]
 FEATURES_KEYS = list(config_dict["preprocess"].keys())[:-1]
 
+PATH_PLOTS = config_dict["script_parameters"]["patient_specific_plots_folder"]
+os.makedirs(PATH_PLOTS, exist_ok = True)
+
 # --------------------------------------------------------
 # -------------------- Load data -------------------------
 # --------------------------------------------------------
-dict_arrays = load_and_process_data(config_dict, data_dir="./real_data_analysis/data")
+dict_arrays = load_and_process_data(config_dict, data_dir=PATH_DATA)
 n_individuals = dict_arrays["genes"].shape[0]
 p_gene = dict_arrays["genes"].shape[2]
 p_metab = dict_arrays["metabolites"].shape[2]
@@ -45,10 +59,9 @@ print("\n preprocessing dict: ", config_dict["preprocess"])
 
 where_all = get_indeces(dict_arrays)
 
-# change this
-genes_names = pd.read_csv("./real_data_analysis/data/genes_names.csv", header=0, sep=";")
+genes_names = pd.read_csv(os.path.join(PATH_DATA, "genes_names.csv"), header=0, sep=";")
 genes_names = genes_names["column_names"].to_numpy()
-metab_names = pd.read_csv("./real_data_analysis/data/metab_names.csv", header=0, sep=";")
+metab_names = pd.read_csv(os.path.join(PATH_DATA, "metab_names.csv"), header=0, sep=";")
 metab_names = metab_names["column_names"].to_numpy()
 
 all_features_names = np.concatenate([
@@ -59,10 +72,10 @@ all_features_names = np.concatenate([
 ])
 
 # Load pickle files
-with open(f"{PATH_MODELS}/all_scalers", "rb") as fp:   # Pickling scalers
+with open(os.path.join(PATH_RESULTS, "all_scalers"), "rb") as fp:   # Pickling scalers
     all_scalers = pickle.load(fp)
 
-with open(f"{PATH_MODELS}/all_shap_values", "rb") as fp:
+with open(os.path.join(PATH_RESULTS, "all_shap_values"), "rb") as fp:
     all_shap_values = pickle.load(fp)
 print("Shap length: ", len(all_shap_values))
 
@@ -71,7 +84,7 @@ all_models = []
 for fold in range(N_FOLDS):
     print(f"Loading model fold {fold+1} of {N_FOLDS}")
 
-    PATH = f"{PATH_MODELS}/model_{fold}"
+    PATH = f"{PATH_RESULTS}/model_{fold}"
     model = DeltaTimeAttentionVAE(
         input_dim_genes=p_gene,
         input_dim_metab=p_metab,

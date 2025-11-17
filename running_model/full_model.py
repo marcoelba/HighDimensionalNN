@@ -184,7 +184,7 @@ class DeltaTimeAttentionVAE(nn.Module):
 
         return ffn_genes_out, ffn_metab_out, y_hat
 
-    def loss(self, m_out, batch):
+    def loss(self, m_out, batch, reduction='sum'):
         """
         Loss function. The structure depends on the batch data.
         To be modified according to the data used.
@@ -194,7 +194,7 @@ class DeltaTimeAttentionVAE(nn.Module):
         x_genes, x_metab, y_baseline, patients_static_features = self.process_batch(batch)
 
         # label prediction loss
-        PredMSE = nn.functional.mse_loss(m_out[-1], batch[-1], reduction='sum')
+        PredMSE = nn.functional.mse_loss(m_out[-1], batch[-1], reduction=reduction)
 
         loss_output = [
             PredMSE

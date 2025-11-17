@@ -92,3 +92,4 @@ results/
 *.drawio.bkp
 
 test_data_local/
+TEMP/
