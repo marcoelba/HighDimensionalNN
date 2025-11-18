@@ -3,7 +3,7 @@ import os
 import numpy as np
 import pandas as pd
 
-from real_data_analysis.utils.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
+from src.utils.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
 
 
 def load_and_process_data(config_dict: dict, data_dir: str):
@@ -11,8 +11,14 @@ def load_and_process_data(config_dict: dict, data_dir: str):
     column_names = config_dict["shared_columns"]
     
     # Load the patient data
-    df_features = pd.read_csv(os.path.join(data_dir, config_dict["file_names"]["path_to_features_data"]), header=0, sep=";")
-    df_metab_data = pd.read_csv(os.path.join(data_dir, config_dict["file_names"]["path_to_metab_data"]), header=0, sep=";")
+    try:
+        df_features = pd.read_csv(os.path.join(data_dir, config_dict["file_names"]["path_to_features_data"]), header=0, sep=";")
+    except KeyError:
+        print("path_to_features_data key NOT found")
+    try:
+        df_metab_data = pd.read_csv(os.path.join(data_dir, config_dict["file_names"]["path_to_metab_data"]), header=0, sep=";")
+    except KeyError:
+        print("path_to_features_data key NOT found")
     df_clinical_data = pd.read_csv(os.path.join(data_dir, config_dict["file_names"]["path_to_clinical_data"]), header=0, sep=";")
     df_gene_names = pd.read_csv(os.path.join(data_dir, config_dict["file_names"]["path_to_gene_names"]), header=0, sep=";")
     df_metab_names = pd.read_csv(os.path.join(data_dir, config_dict["file_names"]["path_to_metabolites_names"]), header=0, sep=";")
