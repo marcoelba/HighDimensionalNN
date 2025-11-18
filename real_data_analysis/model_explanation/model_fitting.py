@@ -20,12 +20,13 @@ from src.utils import data_loading_wrappers
 
 # Script specific modules
 # Must be in the same directory where model_fitting.py is run
-from full_model import DeltaTimeAttentionVAE
+from full_model import DeltaTimeAttentionFFN as Model
 
 
 # read input arguments from console
 parser = argparse.ArgumentParser(description='Run program with custom config and modules')
 parser.add_argument('-c', '--config', required=True, help='Path to config.ini file')
+# parser.add_argument('-m', '--model', required=True, help='Python file containing the model class definition')
 args = parser.parse_args()
 
 # Load config file
@@ -118,7 +119,7 @@ for fold in range(config_dict["training_parameters"]["n_folds"]):
     )
 
     # ---------------------- Model Setup ----------------------
-    model = DeltaTimeAttentionVAE(
+    model = Model(
         input_dim_genes=p_gene,
         input_dim_metab=p_metab,
         input_patient_features_dim=p_static,

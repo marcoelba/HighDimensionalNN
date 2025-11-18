@@ -1,5 +1,5 @@
 # Full Model definition with the following structure:
-# - VAE on genomics and metabolomics
+# - FFN on genomics and metabolomics
 # - z_hat from vae is input to the time expansion plust additional features
 # - transformer
 # - output prediction over time
@@ -7,12 +7,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.vae_attention.modules.transformer import TransformerEncoderLayerWithWeights
-from src.vae_attention.modules.sinusoidal_position_encoder import SinusoidalPositionalEncoding
-from src.vae_attention.modules.vae import VAE
+from src.modules.transformer import TransformerEncoderLayerWithWeights
+from src.modules.sinusoidal_position_encoder import SinusoidalPositionalEncoding
 
 
-class DeltaTimeAttentionVAE(nn.Module):
+class DeltaTimeSelfAttentionFFN(nn.Module):
     """
     Model for longitudinal data with repeated measurements over time and 
     possibly additional dimensions (for example multiple interventions).
@@ -23,17 +22,16 @@ class DeltaTimeAttentionVAE(nn.Module):
         - Output target y: (n, ..., T)
     
     This class define a NN model with the following components:
-    - VAE
+    - FFN
     - Temporal encoding
-    - Transformer
+    - SelfAttention
 
     Args:
         input_dim_genes: int,
         input_dim_metab: int,
         input_patient_features_dim: int,
         n_timepoints: int,
-        model_config: dict,
-        use_sampling_in_vae = None
+        model_config: dict
     """
     def __init__(
         self,
@@ -41,17 +39,15 @@ class DeltaTimeAttentionVAE(nn.Module):
         input_dim_metab: int,
         input_patient_features_dim: int,
         n_timepoints: int,
-        model_config: dict,
-        use_sampling_in_vae = None
+        model_config: dict
     ):
-        super(DeltaTimeAttentionVAE, self).__init__()
+        super(DeltaTimeSelfAttentionFFN, self).__init__()
 
         self.input_dim_genes = input_dim_genes
         self.input_dim_metab = input_dim_metab
         self.input_patient_features_dim = input_patient_features_dim
         self.n_timepoints = n_timepoints
         self.model_config = model_config
-        self.use_sampling_in_vae = use_sampling_in_vae
         
         # variables updated at each iteration of the training
         self.batch_size = 0
@@ -59,22 +55,23 @@ class DeltaTimeAttentionVAE(nn.Module):
         # Generate causal mask
         self.causal_mask = self.generate_causal_mask(n_timepoints)
 
-        # ------------- VAE genomics -------------
-        self.vae_genes = VAE(
-            input_dim=input_dim_genes,
-            vae_input_to_latent_dim=model_config["vae_genomics_input_to_latent_dim"],
-            vae_latent_dim=model_config["vae_genomics_latent_dim"],
-            dropout=0.0
+        # ------------- FFN genomics -------------
+        self.ffn_genes = nn.Sequential(
+            nn.Linear(input_dim_genes, model_config["vae_genomics_input_to_latent_dim"]),
+            nn.GELU(),
+            nn.Dropout(model_config["dropout"]),
+            nn.Linear(model_config["vae_genomics_input_to_latent_dim"], model_config["vae_genomics_latent_dim"])
         )
 
-        # ------------- VAE metabolomics -------------
-        self.vae_metab = VAE(
-            input_dim=input_dim_metab,
-            vae_input_to_latent_dim=model_config["vae_metabolomics_input_to_latent_dim"],
-            vae_latent_dim=model_config["vae_metabolomics_latent_dim"],
-            dropout=0.0
+        # ------------- FFN metabolomics -------------
+        self.ffn_metab = nn.Sequential(
+            nn.Linear(input_dim_metab, model_config["vae_metabolomics_input_to_latent_dim"]),
+            nn.GELU(),
+            nn.Dropout(model_config["dropout"]),
+            nn.Linear(model_config["vae_metabolomics_input_to_latent_dim"], model_config["vae_metabolomics_latent_dim"])
         )
 
+        # interaction with patient features
         self.film_generator_nn = nn.Sequential(
             nn.Linear(input_patient_features_dim, 2 * model_config["transformer_input_dim"]), # Outputs γ and β concatenated
             # nn.GELU()
@@ -161,11 +158,11 @@ class DeltaTimeAttentionVAE(nn.Module):
         x_genes, x_metab, y_baseline, patients_static_features = self.process_batch(batch)
 
         # ---------------------------- VAE ----------------------------
-        vae_genes_out = self.vae_genes(x_genes, use_sampling=self.use_sampling_in_vae)
-        vae_metab_out = self.vae_metab(x_metab, use_sampling=self.use_sampling_in_vae)
+        ffn_genes_out = self.ffn_genes(x_genes)
+        ffn_metab_out = self.ffn_metab(x_metab)
         
         # --------------------- Concat Static fatures ----------------------
-        h = torch.cat([vae_genes_out[1], vae_metab_out[1], y_baseline], dim=-1)
+        h = torch.cat([ffn_genes_out, ffn_metab_out, y_baseline], dim=-1)
 
         # ----------- positional encoding and projection -----------
         h_exp = self.expand_input_in_time(h)
@@ -185,31 +182,21 @@ class DeltaTimeAttentionVAE(nn.Module):
         # --------------------- Predict outcomes ---------------------
         y_hat = self.outcome_prediction(h_out)
 
-        return vae_genes_out, vae_metab_out, y_hat
+        return ffn_genes_out, ffn_metab_out, y_hat
 
-    def loss(self, m_out, batch):
+    def loss(self, m_out, batch, reduction='sum'):
         """
         Loss function. The structure depends on the batch data.
         To be modified according to the data used.
 
-        VAE loss + Prediction Loss (here MSE)
+        Only Prediction Loss (here MSE)
         """
         x_genes, x_metab, y_baseline, patients_static_features = self.process_batch(batch)
-        # vae output: x_hat, mu, logvar, z_hat
-        # Reconstruction loss (MSE)
-        genes_vae_loss = nn.functional.mse_loss(m_out[0][0], x_genes, reduction='sum')
-        metab_vae_loss = nn.functional.mse_loss(m_out[1][0], x_metab, reduction='sum')
-        # KL divergence
-        genes_KLD = -0.5 * torch.sum(1 + m_out[0][2] - m_out[0][1].pow(2) - m_out[0][2].exp())
-        metab_KLD = -0.5 * torch.sum(1 + m_out[1][2] - m_out[1][1].pow(2) - m_out[1][2].exp())
+
         # label prediction loss
-        PredMSE = nn.functional.mse_loss(m_out[-1], batch[-1], reduction='sum')
+        PredMSE = nn.functional.mse_loss(m_out[-1], batch[-1], reduction=reduction)
 
         loss_output = [
-            genes_vae_loss,
-            metab_vae_loss,
-            self.model_config["kl_weight"] * genes_KLD,
-            self.model_config["kl_weight"] * metab_KLD,
             PredMSE
         ]
         return loss_output
@@ -234,11 +221,11 @@ class DeltaTimeAttentionVAE(nn.Module):
             x_genes, x_metab, y_baseline, patients_static_features = self.process_batch(batch)
 
             # ---------------------------- VAE ----------------------------
-            vae_genes_out = self.vae_genes(x_genes, use_sampling=self.use_sampling_in_vae)
-            vae_metab_out = self.vae_metab(x_metab, use_sampling=self.use_sampling_in_vae)
+            ffn_genes_out = self.ffn_genes(x_genes)
+            ffn_metab_out = self.ffn_metab(x_metab)
             
             # --------------------- Concat Static fatures ----------------------
-            h = torch.cat([vae_genes_out[1], vae_metab_out[1], y_baseline], dim=-1)
+            h = torch.cat([ffn_genes_out, ffn_metab_out, y_baseline], dim=-1)
 
             # ------ positional encoding and projection ------
             h_exp = self.expand_input_in_time(h)

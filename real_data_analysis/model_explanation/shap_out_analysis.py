@@ -19,10 +19,6 @@ from src.utils.get_arrays import load_and_process_data
 from src.utils.prepare_data_for_shap import prepare_data_for_shap
 from src.utils import data_loading_wrappers
 
-# Script specific modules
-# Must be in the same directory where model_fitting.py is run
-from full_model import DeltaTimeAttentionVAE
-
 
 # read input arguments from console
 parser = argparse.ArgumentParser(description='Run program with custom config and modules')

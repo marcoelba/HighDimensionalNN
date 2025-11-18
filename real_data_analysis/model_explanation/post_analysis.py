@@ -18,7 +18,7 @@ from src.utils import data_loading_wrappers
 
 # Script specific modules
 # Must be in the same directory where model_fitting.py is run
-from full_model import DeltaTimeAttentionVAE
+from full_model import DeltaTimeAttentionFFN as Model
 
 
 # read input arguments from console
@@ -57,7 +57,7 @@ for fold in range(N_FOLDS):
     print(f"Loading model fold {fold+1} of {N_FOLDS}")
 
     PATH = f"{PATH_RESULTS}/model_{fold}"
-    model = DeltaTimeAttentionVAE(
+    model = Model(
         input_dim_genes=p_gene,
         input_dim_metab=p_metab,
         input_patient_features_dim=p_static,

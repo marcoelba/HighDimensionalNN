@@ -1,5 +1,5 @@
 # Full Model definition with the following structure:
-# - VAE on genomics and metabolomics
+# - FFN on genomics and metabolomics
 # - z_hat from vae is input to the time expansion plust additional features
 # - transformer
 # - output prediction over time
@@ -11,7 +11,7 @@ from src.modules.transformer import TransformerEncoderLayerWithWeights
 from src.modules.sinusoidal_position_encoder import SinusoidalPositionalEncoding
 
 
-class DeltaTimeAttentionVAE(nn.Module):
+class DeltaTimeAttentionFFN(nn.Module):
     """
     Model for longitudinal data with repeated measurements over time and 
     possibly additional dimensions (for example multiple interventions).
@@ -41,7 +41,7 @@ class DeltaTimeAttentionVAE(nn.Module):
         n_timepoints: int,
         model_config: dict
     ):
-        super(DeltaTimeAttentionVAE, self).__init__()
+        super(DeltaTimeAttentionFFN, self).__init__()
 
         self.input_dim_genes = input_dim_genes
         self.input_dim_metab = input_dim_metab
