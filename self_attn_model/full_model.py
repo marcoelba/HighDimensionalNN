@@ -1,17 +1,16 @@
 # Full Model definition with the following structure:
 # - FFN on genomics and metabolomics
-# - z_hat from vae is input to the time expansion plust additional features
-# - transformer
+# - only attention layer
 # - output prediction over time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.modules.transformer import TransformerEncoderLayerWithWeights
+from src.modules.multi_head_attention_layer import MultiHeadCrossAttentionWithWeights
 from src.modules.sinusoidal_position_encoder import SinusoidalPositionalEncoding
 
 
-class DeltaTimeSelfAttentionFFN(nn.Module):
+class Model(nn.Module):
     """
     Model for longitudinal data with repeated measurements over time and 
     possibly additional dimensions (for example multiple interventions).
@@ -24,7 +23,7 @@ class DeltaTimeSelfAttentionFFN(nn.Module):
     This class define a NN model with the following components:
     - FFN
     - Temporal encoding
-    - SelfAttention
+    - Self-Attention
 
     Args:
         input_dim_genes: int,
@@ -41,7 +40,7 @@ class DeltaTimeSelfAttentionFFN(nn.Module):
         n_timepoints: int,
         model_config: dict
     ):
-        super(DeltaTimeSelfAttentionFFN, self).__init__()
+        super(Model, self).__init__()
 
         self.input_dim_genes = input_dim_genes
         self.input_dim_metab = input_dim_metab
@@ -57,53 +56,51 @@ class DeltaTimeSelfAttentionFFN(nn.Module):
 
         # ------------- FFN genomics -------------
         self.ffn_genes = nn.Sequential(
-            nn.Linear(input_dim_genes, model_config["vae_genomics_input_to_latent_dim"]),
+            nn.Linear(input_dim_genes, model_config["genomics_input_to_latent_dim"]),
             nn.GELU(),
             nn.Dropout(model_config["dropout"]),
-            nn.Linear(model_config["vae_genomics_input_to_latent_dim"], model_config["vae_genomics_latent_dim"])
+            nn.Linear(model_config["genomics_input_to_latent_dim"], model_config["genomics_latent_dim"])
         )
 
         # ------------- FFN metabolomics -------------
         self.ffn_metab = nn.Sequential(
-            nn.Linear(input_dim_metab, model_config["vae_metabolomics_input_to_latent_dim"]),
+            nn.Linear(input_dim_metab, model_config["metabolomics_input_to_latent_dim"]),
             nn.GELU(),
             nn.Dropout(model_config["dropout"]),
-            nn.Linear(model_config["vae_metabolomics_input_to_latent_dim"], model_config["vae_metabolomics_latent_dim"])
+            nn.Linear(model_config["metabolomics_input_to_latent_dim"], model_config["metabolomics_latent_dim"])
         )
 
         # interaction with patient features
         self.film_generator_nn = nn.Sequential(
-            nn.Linear(input_patient_features_dim, 2 * model_config["transformer_input_dim"]), # Outputs γ and β concatenated
+            nn.Linear(input_patient_features_dim, 2 * model_config["attn_input_dim"]), # Outputs γ and β concatenated
             # nn.GELU()
         )
 
         # ---- non-linear projection of [X, y_t0] to common input dimension -----
         # Adding +1 to input_dim to account for the baseline value of y: y_t0
-        tot_dim_h = model_config["vae_genomics_latent_dim"] + model_config["vae_metabolomics_latent_dim"] + 1
+        tot_dim_h = model_config["genomics_latent_dim"] + model_config["metabolomics_latent_dim"] + 1
         self.projection_to_transformer = nn.Sequential(
-            nn.Linear(tot_dim_h, model_config["transformer_input_dim"]),
+            nn.Linear(tot_dim_h, model_config["attn_input_dim"]),
             nn.GELU(),
             nn.Dropout(model_config["dropout"])
         )
 
         # ---------------- Time Embeddings ----------------
         self.pos_encoder = SinusoidalPositionalEncoding(
-            model_config["transformer_input_dim"],
+            model_config["attn_input_dim"],
             model_config["max_len_position_enc"]
         )
 
         # -------------- Time-Aware transformer -------------
-        self.transformer_module = TransformerEncoderLayerWithWeights(
-            input_dim=model_config["transformer_input_dim"],
+        self.self_attn = MultiHeadCrossAttentionWithWeights(
+            input_dim=model_config["attn_input_dim"],
             nheads=model_config["n_heads"],
-            dim_feedforward=model_config["transformer_dim_feedforward"],
-            dropout_attention=model_config["dropout_attention"],
-            dropout=model_config["dropout"]
-        )
+            dropout_attention=model_config["dropout_attention"]
+        ) 
 
         # ------------- Final output layer -------------
         self.dropout = nn.Dropout(model_config["dropout"])
-        self.fc_out = nn.Linear(model_config["transformer_input_dim"], 1)  # Predicts 1 value per timepoint
+        self.fc_out = nn.Linear(model_config["attn_input_dim"], 1)  # Predicts 1 value per timepoint
     
     def generate_causal_mask(self, T):
         return torch.triu(torch.ones(T, T) * float('-inf'), diagonal=1)
@@ -177,7 +174,7 @@ class DeltaTimeSelfAttentionFFN(nn.Module):
         h_time = self.pos_encoder(h_mod)
 
         # ----------------------- Transformer ------------------------------
-        h_out = self.transformer_module(h_time, attn_mask=self.causal_mask)
+        h_out = self.self_attn(h_time, h_time, h_time, attn_mask=self.causal_mask)
 
         # --------------------- Predict outcomes ---------------------
         y_hat = self.outcome_prediction(h_out)
@@ -227,7 +224,7 @@ class DeltaTimeSelfAttentionFFN(nn.Module):
             # --------------------- Concat Static fatures ----------------------
             h = torch.cat([ffn_genes_out, ffn_metab_out, y_baseline], dim=-1)
 
-            # ------ positional encoding and projection ------
+            # ----------- positional encoding and projection -----------
             h_exp = self.expand_input_in_time(h)
 
             # --------------- Projection to transformer input dimension -----------

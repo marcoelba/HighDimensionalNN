@@ -21,7 +21,7 @@ from src.utils.get_available_datapoints_indeces import get_indeces
 
 # Script specific modules
 # Must be in the same directory where model_fitting.py is run
-from full_model import DeltaTimeAttentionFFN as Model
+from full_model import Model
 
 
 # read input arguments from console

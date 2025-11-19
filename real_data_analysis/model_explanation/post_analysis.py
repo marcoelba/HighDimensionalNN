@@ -18,7 +18,7 @@ from src.utils import data_loading_wrappers
 
 # Script specific modules
 # Must be in the same directory where model_fitting.py is run
-from full_model import DeltaTimeAttentionFFN as Model
+from full_model import Model
 
 
 # read input arguments from console
