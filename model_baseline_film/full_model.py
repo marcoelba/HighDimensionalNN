@@ -45,7 +45,7 @@ class Model(nn.Module):
 
         self.input_dim_genes = input_dim_genes
         self.input_dim_metab = input_dim_metab
-        self.input_patient_features_dim = input_patient_features_dim
+        self.input_patient_features_dim = input_patient_features_dim + 1
         self.n_timepoints = n_timepoints
         self.model_config = model_config
         
@@ -73,13 +73,13 @@ class Model(nn.Module):
 
         # interaction with patient features
         self.film_generator_nn = nn.Sequential(
-            nn.Linear(input_patient_features_dim, 2 * model_config["transformer_input_dim"]), # Outputs γ and β concatenated
+            nn.Linear(self.input_patient_features_dim, 2 * model_config["transformer_input_dim"]), # Outputs γ and β concatenated
             # nn.GELU()
         )
 
         # ---- non-linear projection of [X, y_t0] to common input dimension -----
         # Adding +1 to input_dim to account for the baseline value of y: y_t0
-        tot_dim_h = model_config["vae_genomics_latent_dim"] + model_config["vae_metabolomics_latent_dim"] + 1
+        tot_dim_h = model_config["vae_genomics_latent_dim"] + model_config["vae_metabolomics_latent_dim"]
         self.projection_to_transformer = nn.Sequential(
             nn.Linear(tot_dim_h, model_config["transformer_input_dim"]),
             nn.GELU(),
@@ -162,7 +162,7 @@ class Model(nn.Module):
         ffn_metab_out = self.ffn_metab(x_metab)
         
         # --------------------- Concat Static fatures ----------------------
-        h = torch.cat([ffn_genes_out, ffn_metab_out, y_baseline], dim=-1)
+        h = torch.cat([ffn_genes_out, ffn_metab_out], dim=-1)
 
         # ----------- positional encoding and projection -----------
         h_exp = self.expand_input_in_time(h)
@@ -171,7 +171,8 @@ class Model(nn.Module):
         h_in = self.projection_to_transformer(h_exp)
 
         # -------- Generate FiLM parameters γ and β from static patient features --------
-        h_mod = self.film_generator(patients_static_features, h_in)
+        h_patients_static_features = torch.cat([patients_static_features, y_baseline], dim=-1)
+        h_mod = self.film_generator(h_patients_static_features, h_in)
 
         # --------------------- Time positional embedding ---------------------
         h_time = self.pos_encoder(h_mod)

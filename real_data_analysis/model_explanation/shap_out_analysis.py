@@ -99,13 +99,18 @@ for time_point in range(n_timepoints):
 
 # patient features shap
 patient_cols = config_dict["data_arrays"]["static_patient_features"]
+patient_cols.append("Baseline")
 
 for time_point in range(n_timepoints):
     patient_data_shap = all_shap_values[time_point][2][...,-1]
+    patient_data_shap = np.concatenate([patient_data_shap, all_shap_values[time_point][3][...,-1]], axis=-1)
+
+    features = np.concatenate([features_combined[2], features_combined[3]], axis=-1)
+
     fig = plt.figure()
     shap.summary_plot(
         patient_data_shap,
-        features=features_combined[2],
+        features=features,
         feature_names=patient_cols,
         show=False
     )
