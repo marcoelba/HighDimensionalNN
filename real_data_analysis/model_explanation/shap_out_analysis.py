@@ -19,10 +19,6 @@ from src.utils.get_arrays import load_and_process_data
 from src.utils.prepare_data_for_shap import prepare_data_for_shap
 from src.utils import data_loading_wrappers
 
-# Script specific modules
-# Must be in the same directory where model_fitting.py is run
-from full_model import DeltaTimeAttentionVAE
-
 
 # read input arguments from console
 parser = argparse.ArgumentParser(description='Run program with custom config and modules')
@@ -103,13 +99,18 @@ for time_point in range(n_timepoints):
 
 # patient features shap
 patient_cols = config_dict["data_arrays"]["static_patient_features"]
+patient_cols.append("Baseline")
 
 for time_point in range(n_timepoints):
     patient_data_shap = all_shap_values[time_point][2][...,-1]
+    patient_data_shap = np.concatenate([patient_data_shap, all_shap_values[time_point][3][...,-1]], axis=-1)
+
+    features = np.concatenate([features_combined[2], features_combined[3]], axis=-1)
+
     fig = plt.figure()
     shap.summary_plot(
         patient_data_shap,
-        features=features_combined[2],
+        features=features,
         feature_names=patient_cols,
         show=False
     )
