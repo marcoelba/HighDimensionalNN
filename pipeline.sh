@@ -54,6 +54,12 @@ source ./patient_predictions.sh > stdout_patient_predictions
 echo "Running patients shapley"
 source ./patient_shapley_explanations.sh > stdout_patient_shapley_explanations
 
+echo "Running latent shapley generation"
+source ./generate_latent_space_shapley_values.sh > stdout_latent_space_shapley_values
+
+echo "Running latent shapley analysis"
+source ./latent_shapley_analysis.sh > stdout_latent_shapley_analysis
+
 # remove when done
 cd ../
 
