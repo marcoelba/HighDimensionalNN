@@ -21,14 +21,14 @@ setup_temp_directory
 # Configuration
 STATUS_FILE="./pipeline_log.txt"
 SCRIPTS=(
-    "model_fitting.sh" 
-    "model_analysis.sh" 
-    "generate_shapley_values.sh" 
-    "global_shapley_analysis.sh" 
-    "patient_predictions.sh" 
-    "patient_shapley_explanations.sh" 
-    "generate_latent_space_shapley_values.sh" 
-    "latent_shapley_analysis.sh" 
+    "model_fitting" 
+    "model_analysis" 
+    "generate_shapley_values" 
+    "global_shapley_analysis" 
+    "patient_predictions" 
+    "patient_shapley_explanations" 
+    "generate_latent_space_shapley_values" 
+    "latent_shapley_analysis" 
 )
 
 # Initialize or read status file
@@ -73,12 +73,12 @@ initialize_status "$@"
 for script in "${SCRIPTS[@]}"; do
     if should_run_script "$script"; then
         echo "=== Running $script ==="
-        if ./lib/shell_scripts/"$script" > stdout_$script; then
+        if ./lib/shell_scripts/"$script".sh > stdout_$script; then
             echo "✓ $script completed successfully"
             mark_success "$script"
         else
             echo "✗ $script failed with exit code $?"
-            mark_failed "$script"
+            mark_failed "$script".sh
             # Optional: stop on first failure
             echo "Stopping due to failure in $script"
             exit 1
@@ -87,39 +87,6 @@ for script in "${SCRIPTS[@]}"; do
         echo "--- Skipping $script (already completed) ---"
     fi
 done
-
-echo "Running model fitting"
-./lib/shell_scripts/model_fitting.sh > stdout_model_fitting
-# create a log file
-echo "model_fitting" > pipeline_log.txt
-
-echo "Running model analysis"
-./lib/shell_scripts/model_analysis.sh > stdout_model_analysis
-echo "model_analysis" >> pipeline_log.txt
-
-echo "Running shapley values generation"
-./lib/shell_scripts/generate_shapley_values.sh > stdout_generate_shapley_values
-echo "generate_shapley_values" >> pipeline_log.txt
-
-echo "Running shapley analysis"
-./lib/shell_scripts/global_shapley_analysis.sh > stdout_global_shapley_analysis
-echo "global_shapley_analysis" >> pipeline_log.txt
-
-echo "Running patients predictions"
-./lib/shell_scripts/patient_predictions.sh > stdout_patient_predictions
-echo "patient_predictions" >> pipeline_log.txt
-
-echo "Running patients shapley"
-./lib/shell_scripts/patient_shapley_explanations.sh > stdout_patient_shapley_explanations
-echo "patient_shapley_explanations" >> pipeline_log.txt
-
-echo "Running latent shapley generation"
-./lib/shell_scripts/generate_latent_space_shapley_values.sh > stdout_latent_space_shapley_values
-echo "generate_latent_space_shapley_values" >> pipeline_log.txt
-
-echo "Running latent shapley analysis"
-./lib/shell_scripts/latent_shapley_analysis.sh > stdout_latent_shapley_analysis
-echo "latent_shapley_analysis" >> pipeline_log.txt
 
 # remove when done
 cd ../
