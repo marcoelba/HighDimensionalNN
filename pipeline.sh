@@ -1,18 +1,61 @@
 #!/bin/bash
 
 # define temporary variable names
-while getopts d:m: option; do
+while getopts d:m:r option; do
     case "${option}" in
         d) TEMP_DIR=${OPTARG};;
         m) MODEL_DIR=${OPTARG};;
+        r) RESTART_FLAG=true;;
     esac
 done
+export TEMP_DIR MODEL_DIR
+export RESTART_FLAG=${RESTART_FLAG:-false} # set to false by default if not provided
 
-# TEMP_DIR="TEMP"
-# MODEL_DIR="running_model"
+set -e
 
-# make temporary working directory
-mkdir -p $TEMP_DIR
+# Source setup scripts
+source ./lib/prepare_temp_directory.sh
+# Setup TEMP directory
+setup_temp_directory
+
+# Configuration
+STATUS_FILE="./pipeline_log.txt"
+SCRIPTS=(
+    "model_fitting" 
+    "model_analysis" 
+    "generate_shapley_values" 
+    "global_shapley_analysis" 
+    "patient_predictions" 
+    "patient_shapley_explanations" 
+    "generate_latent_space_shapley_values" 
+    "latent_shapley_analysis" 
+)
+
+# Initialize or read status file
+initialize_status() {
+    if [ ! -f "$STATUS_FILE" ] || [ "$RESTART_FLAG" = "true" ]; then
+        echo "Initializing status tracking..."
+        > "$STATUS_FILE"  # Create or clear the file
+    fi
+}
+
+# Check if script should run
+should_run_script() {
+    local script_name="$1"
+    ! grep -q "^SUCCESS:$script_name$" "$STATUS_FILE"
+}
+
+# Mark script as successful
+mark_success() {
+    local script_name="$1"
+    echo "SUCCESS:$script_name" >> "$STATUS_FILE"
+}
+
+# Mark script as failed
+mark_failed() {
+    local script_name="$1"
+    echo "FAILED:$script_name" >> "$STATUS_FILE"
+}
 
 # get Python absolute path using PWD
 PYTHON_INTERPRETER="$PWD/python_env/bin/python3.12"
@@ -20,51 +63,35 @@ PYTHON_INTERPRETER="$PWD/python_env/bin/python3.12"
 export PYTHON_INTERPRETER
 echo "Python interpreter: $PYTHON_INTERPRETER"
 
-# copy files to working directory
-cp -r data $TEMP_DIR
-cp -r src $TEMP_DIR
-cp -r real_data_analysis $TEMP_DIR
-
-cp -r real_data_analysis/shell_scripts/* $TEMP_DIR
-
-cp $MODEL_DIR/config.ini $TEMP_DIR
-cp $MODEL_DIR/full_model.py $TEMP_DIR
-
 # move into $TEMP_DIR
 cd $TEMP_DIR
 
 # Run shell scripts in order
-set -e
+initialize_status "$@"
 
-echo "Running model fitting"
-source ./model_fitting.sh > stdout_model_fitting
 
-echo "Running model analysis"
-source ./model_analysis.sh > stdout_model_analysis
-
-echo "Running shapley values generation"
-source ./generate_shapley_values.sh > stdout_generate_shapley_values
-
-echo "Running shapley analysis"
-source ./global_shapley_analysis.sh > stdout_global_shapley_analysis
-
-echo "Running patients predictions"
-source ./patient_predictions.sh > stdout_patient_predictions
-
-echo "Running patients shapley"
-source ./patient_shapley_explanations.sh > stdout_patient_shapley_explanations
-
-echo "Running latent shapley generation"
-source ./generate_latent_space_shapley_values.sh > stdout_latent_space_shapley_values
-
-echo "Running latent shapley analysis"
-source ./latent_shapley_analysis.sh > stdout_latent_shapley_analysis
+for script in "${SCRIPTS[@]}"; do
+    if should_run_script "$script"; then
+        echo "=== Running $script ==="
+        if ./lib/shell_scripts/"$script".sh > stdout_$script; then
+            echo "✓ $script completed successfully"
+            mark_success "$script"
+        else
+            echo "✗ $script failed with exit code $?"
+            mark_failed "$script".sh
+            # Optional: stop on first failure
+            echo "Stopping due to failure in $script"
+            exit 1
+        fi
+    else
+        echo "--- Skipping $script (already completed) ---"
+    fi
+done
 
 # remove when done
 cd ../
 
 rm -r $TEMP_DIR/data
 rm -r $TEMP_DIR/src
-rm -r $TEMP_DIR/real_data_analysis
-rm -r $TEMP_DIR/*.sh
+rm -r $TEMP_DIR/lib
 rm -r $TEMP_DIR/__pycache__

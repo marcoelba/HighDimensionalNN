@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # copy files to parent directory
-cp real_data_analysis/model_explanation/shap_out_analysis.py ./
+cp src/real_data_analysis/model_explanation/shap_out_analysis.py ./
 
 # run something
 "$PYTHON_INTERPRETER" shap_out_analysis.py -c config.ini
