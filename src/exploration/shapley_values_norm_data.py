@@ -18,15 +18,18 @@ from src.utils import data_loading_wrappers
 
 # generate linear regression data
 n = 100
-p = 3
+p = 5
 
 # covarites with different var
 x1 = np.random.randn(n, 1)
-x2 = np.random.randn(n, 1) * 0.1
-x3 = np.random.randn(n, 1) * 10
-X = np.concatenate([x1, x2, x3], axis=1)
+x2 = np.random.randn(n, 1) * 10
+x3 = np.random.randn(n, 1) * 0.1
+x4 = np.random.randn(n, 1) * 0.1
+x5 = np.random.randn(n, 1) * 0.1
 
-y = X.dot(np.array([1., 1., 1.])) + np.random.randn(n) * 0.2
+X = np.concatenate([x1, x2, x3, x4, x5], axis=1)
+
+y = X.dot(np.array([1., 1., 1., 1., 1.])) + np.random.randn(n) * 0.2
 y = y[..., None]
 
 
@@ -46,10 +49,11 @@ np.linalg.inv(X_std.transpose().dot(X_std)).dot(X_std.transpose().dot(y))
 class LinearModel(nn.Module):
     def __init__(self, input_dim: int):
         super(LinearModel, self).__init__()
-        self.fc1 = nn.Linear(input_dim, 1)
+        self.fc1 = nn.Linear(input_dim, 5)
+        self.fc2 = nn.Linear(5, 1)
 
     def forward(self, batch):
-        return self.fc1(batch[0])
+        return self.fc2(self.fc1(batch[0]))
 
     def loss(self, m_out, batch):
         # label prediction loss
@@ -73,7 +77,7 @@ model_nn = LinearModel(p).to(device)
 optimizer = optim.Adam(model_nn.parameters(), lr=1e-3)
 
 # Training Loop
-num_epochs = 7000
+num_epochs = 5000
 
 trainer = training_wrapper.Training(dataloader)
 trainer.training_loop(model_nn, optimizer, num_epochs)
@@ -106,6 +110,8 @@ shap.summary_plot(
     features=X_tensor,
     show=True
 )
+shap_values_std = shap_values.std(axis=0)
+shap_values_std
 
 row_id = 0
 explanation = shap.Explanation(
@@ -115,13 +121,35 @@ explanation = shap.Explanation(
 )
 shap.plots.waterfall(explanation, show=True)
 
+sum_shap_patient = np.abs(shap_values).sum(axis=1)
+sum_shap_patient[np.argsort(sum_shap_patient)[::-1]]
+
+# isolate features with small variance
+small_std = np.std(shap_values, axis=0) < 0.5
+
+shap.summary_plot(
+    shap_values[:, small_std],
+    features=X_tensor[:, small_std],
+    show=True
+)
+
+row_id = 0
+explanation = shap.Explanation(
+    values=shap_values[row_id, small_std],
+    base_values=base_value,
+    data=X[row_id, small_std]
+)
+shap.plots.waterfall(explanation, show=True)
+
+
 # new samples
-new_data = torch.tensor(np.array([[0., 0., 0.], [1., 0.1, -10.], [1., 1., -1.]]))
+new_data = torch.tensor(np.array([[0., 0., 0.], [1., 0.1, -10.], [1., 1., -1.]]), dtype=torch.float32)
+model_nn([new_data, new_data])
 shap_values = explainer.shap_values(new_data)
 shap_values.shape
 shap_values = shap_values[..., -1]
 
-row_id = 2
+row_id = 1
 explanation = shap.Explanation(
     values=shap_values[row_id, :],
     base_values=base_value,
@@ -129,6 +157,16 @@ explanation = shap.Explanation(
 )
 shap.plots.waterfall(explanation, show=True)
 # one standard deviation corresponds to a change according to the estimated shapley value
+
+norm_shap_values = shap_values / shap_values_std
+
+row_id = 2
+explanation = shap.Explanation(
+    values=norm_shap_values[row_id, :],
+    base_values=base_value,
+    data=new_data[row_id, :].numpy()
+)
+shap.plots.waterfall(explanation, show=True)
 
 np.abs(shap_values).mean(axis=0)
 np.abs(shap_values)[:, 0].mean()
