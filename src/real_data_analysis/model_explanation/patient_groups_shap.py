@@ -145,9 +145,11 @@ print("Shape background_data for SHAP: ", features_combined[0].shape)
 
 torch_scalers_outcome = [TorchScaler(all_scalers[fold]['y_target'][0]) for fold in range(N_FOLDS)]
 
+
+# ---------------- Plot with sum over genes and metabolites -----------------
 all_features_names = np.concatenate([
-    np.array(["genes"]),
-    np.array(["metabolites"]),
+    np.array(["All genes"]),
+    np.array(["All metabolites"]),
     np.array(config_dict["data_arrays"]["static_patient_features"]),
     np.array(["Baseline"])
 ])
@@ -203,8 +205,8 @@ for time_point in range(n_timepoints):
         # mean over the multiple meals
         # sum over the features contributions
         mean_patient_data = np.concatenate([
-            dict_arrays["genes"][patient_id][patient_not_na==1].mean(axis=0).squeeze().sum()[..., None],
-            dict_arrays["metabolites"][patient_id][patient_not_na==1].mean(axis=0).squeeze().sum()[..., None],
+            np.array(np.nan)[..., None],
+            np.array(np.nan)[..., None],
             dict_arrays["static_patient_features"][patient_id][patient_not_na==1].mean(axis=0).squeeze(),
             np.exp(dict_arrays["y_baseline"][patient_id][patient_not_na==1]).mean(axis=0)[..., -1],
         ])
@@ -230,10 +232,95 @@ for time_point in range(n_timepoints):
         fig.savefig(f"{path_patient_plots}/groups_features_shapley_time_{time_point+1}.pdf", format="pdf")
         plt.close()
 
-print("\n ---------------- END ------------------")
+
+# ---------------- Plot with sum of ABS over genes and metabolites -----------------
+all_features_names = np.concatenate([
+    np.array(["All genes"]),
+    np.array(["All metabolites"]),
+    np.array(config_dict["data_arrays"]["static_patient_features"]),
+    np.array(["Baseline"])
+])
+
+# Plot shap waterfall values
+for time_point in range(n_timepoints):
+
+    # Get base values for the explainer - time specific
+    ensemble_model = EnsembleModel(
+        all_models,
+        time_to_explain=time_point,
+        torch_scalers_outcome=torch_scalers_outcome
+    )
+    ensemble_model.eval()
+    with torch.no_grad():
+        predictions = ensemble_model(*features_combined)
+        base_values = predictions.numpy()
+    mean_base_value = np.array(np.array_split(base_values, N_FOLDS, axis=0)).mean()
+
+    genes_shap = all_shap_values[time_point][0][..., -1]  # genes shap
+    metab_shap = all_shap_values[time_point][1][..., -1]  # metabolites shap
+    patient_clin_shap = all_shap_values[time_point][2][..., -1]  # patient shap
+    baseline_shap = all_shap_values[time_point][3][..., -1]  # patient shap
+
+    # Takes averages over FOLDS
+    # take sum over genes and metabolites
+    mean_genes_shap = np.abs(np.array(np.array_split(genes_shap, N_FOLDS, axis=0)).mean(axis=0)).sum(axis=1)
+    mean_metab_shap = np.abs(np.array(np.array_split(metab_shap, N_FOLDS, axis=0)).mean(axis=0)).sum(axis=1)
+    mean_patient_clin_shap = np.array(np.array_split(patient_clin_shap, N_FOLDS, axis=0)).mean(axis=0)
+    mean_baseline_shap = np.array(np.array_split(baseline_shap, N_FOLDS, axis=0)).mean(axis=0)
+
+    # make one array for shap and data
+    mean_shap = np.concatenate([
+        mean_genes_shap[..., None],
+        mean_metab_shap[..., None],
+        mean_patient_clin_shap,
+        mean_baseline_shap
+        ], axis=-1
+    )
+
+    # slice over time
+    slice_start = 0
+    slice_end = 0
+    for patient_id in range(n_individuals):
+        # make folder for patient specific plots
+        path_patient_plots = f"{PATH_PLOTS}/patient_{patient_id}"
+        os.makedirs(path_patient_plots, exist_ok = True)
+
+        patient_not_na = where_all[patient_id]
+        sum_notna = patient_not_na.sum()
+        slice_end += sum_notna
+
+        # mean over the multiple meals
+        # sum over the features contributions
+        mean_patient_data = np.concatenate([
+            np.array(np.nan)[..., None],
+            np.array(np.nan)[..., None],
+            dict_arrays["static_patient_features"][patient_id][patient_not_na==1].mean(axis=0).squeeze(),
+            np.exp(dict_arrays["y_baseline"][patient_id][patient_not_na==1]).mean(axis=0)[..., -1],
+        ])
+        patient_shap = mean_shap[slice_start:slice_end]
+        
+        # Average shap values over multiple meals
+        mean_patient_shap = patient_shap.mean(axis=0)
+
+        slice_start += sum_notna
+
+        # make shap explanation object
+        explanation = shap.Explanation(
+            values=mean_patient_shap,
+            base_values=mean_base_value,
+            data=mean_patient_data,
+            feature_names=all_features_names
+        )
+
+        fig = plt.figure()
+        shap.plots.bar(explanation, show=False, max_display=25)
+        fig.set_size_inches(20, 15)  # change after because waterfall resize the fig
+        # plt.show()
+        fig.savefig(f"{path_patient_plots}/abs_groups_features_shapley_time_{time_point+1}.pdf", format="pdf")
+        plt.close()
 
 
-# Plot sum of absolute values of shapley values
+# -------------- Plot clusters of shapley values ------------------
 def cluster_sum(patient_shap_array, n_clusters=3):
     kmeans = KMeans(n_clusters=n_clusters, random_state=0, n_init="auto").fit(patient_shap_array)
     shap_sum = []
