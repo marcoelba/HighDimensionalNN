@@ -26,7 +26,6 @@ from full_model import Model
 # read input arguments from console
 parser = argparse.ArgumentParser(description='Run program with custom config and modules')
 parser.add_argument('-c', '--config', required=True, help='Path to config.ini file')
-# parser.add_argument('-m', '--model', required=True, help='Python file containing the model class definition')
 args = parser.parse_args()
 
 # Load config file
@@ -37,19 +36,27 @@ if not config_path.exists():
 config_dict = read_config(config_path)
 
 PATH_RESULTS = config_dict["script_parameters"]["results_folder"]
-PATH_DATA = config_dict["script_parameters"]["data_folder"]
 DEVICE = torch.device(config_dict["training_parameters"]["device"])
-os.makedirs(PATH_RESULTS, exist_ok = True)
+os.makedirs(config_dict["script_parameters"]["results_folder"], exist_ok = True)
 
 # --------------------------------------------------------
 # -------------------- Load data -------------------------
 # --------------------------------------------------------
-dict_arrays = load_and_process_data(config_dict, data_dir=PATH_DATA)
+dict_arrays = load_and_process_data(config_dict, data_dir=config_dict["script_parameters"]["data_folder"])
 n_individuals = dict_arrays["genes"].shape[0]
 p_gene = dict_arrays["genes"].shape[2]
 p_metab = dict_arrays["metabolites"].shape[2]
 p_static = dict_arrays["static_patient_features"].shape[2]
 n_timepoints = dict_arrays["y_target"].shape[2]
+
+model_paramerers = dict(
+    p_gene=p_gene,
+    p_metab=p_metab,
+    p_static=p_static,
+    n_timepoints=n_timepoints
+)
+with open(f"{PATH_RESULTS}/model_paramerers", "wb") as fp:   # Pickling predictions
+    pickle.dump(model_paramerers, fp)
 
 print("\n preprocessing dict: ", config_dict["preprocess"])
 

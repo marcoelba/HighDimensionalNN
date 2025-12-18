@@ -1,19 +1,12 @@
 # analysis of loss components
-import os
-import pickle
-import copy
-from pathlib import Path
-import argparse
-
 import torch
 import torch.nn as nn
 import pandas as pd
 import numpy as np
 
-from src.utils.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
 from src.utils.features_preprocessing import preprocess_train, preprocess_transform
-from src.utils.config_reader import read_config
-from src.utils.get_arrays import load_and_process_data
+from src.utils.config_reader import get_config
+from src.utils.get_arrays import CustomData
 from src.utils import data_loading_wrappers
 
 # Script specific modules
@@ -21,52 +14,21 @@ from src.utils import data_loading_wrappers
 from full_model import Model
 
 
-# read input arguments from console
-parser = argparse.ArgumentParser(description='Run program with custom config and modules')
-parser.add_argument('-c', '--config', required=True, help='Path to config.ini file')
-args = parser.parse_args()
-
-# Load config file
-config_path = Path(args.config)
-if not config_path.exists():
-    print(f"Error: Config file not found: {config_path}")
-    sys.exit(1)
-config_dict = read_config(config_path)
+# get config from console input arguments
+config_dict = get_config()
 
 PATH_RESULTS = config_dict["script_parameters"]["results_folder"]
-PATH_DATA = config_dict["script_parameters"]["data_folder"]
 DEVICE = torch.device(config_dict["training_parameters"]["device"])
 N_FOLDS = config_dict["training_parameters"]["n_folds"]
 
-# --------------------------------------------------------
 # -------------------- Load data -------------------------
-# --------------------------------------------------------
-dict_arrays = load_and_process_data(config_dict, data_dir=PATH_DATA)
-n_individuals = dict_arrays["genes"].shape[0]
-p_gene = dict_arrays["genes"].shape[2]
-p_metab = dict_arrays["metabolites"].shape[2]
-p_static = dict_arrays["static_patient_features"].shape[2]
-n_timepoints = dict_arrays["y_target"].shape[2]
+data = CustomData(config_dict, data_dir=config_dict["script_parameters"]["data_folder"])
+dict_arrays = data.load_and_process_data(data_dir=config_dict["script_parameters"]["data_folder"])
 
-# Load pickle files
-with open(f"{PATH_RESULTS}/all_scalers", "rb") as fp:   # Pickling scalers
-    all_scalers = pickle.load(fp)
-
-all_models = []
-for fold in range(N_FOLDS):
-    print(f"Loading model fold {fold+1} of {N_FOLDS}")
-
-    PATH = f"{PATH_RESULTS}/model_{fold}"
-    model = Model(
-        input_dim_genes=p_gene,
-        input_dim_metab=p_metab,
-        input_patient_features_dim=p_static,
-        n_timepoints=n_timepoints,
-        model_config=config_dict["model_params"]
-    ).to(DEVICE)
-    model.load_state_dict(torch.load(PATH))
-    all_models.append(model)
-
+# load model pipeline data
+pipeline_data = EnsemblePipelineData(config_dict=config_dict)
+all_scalers = pipeline_data.load_scalers()
+model_paramerers = pipeline_data.load_model_paramerers()
 
 # LOSS components
 mse_all_folds = []
@@ -76,6 +38,17 @@ genes_kl_loss = []
 metab_kl_loss = []
 
 for fold in range(N_FOLDS):
+    print(f"Loading model fold {fold+1} of {N_FOLDS}")
+    path = f"{PATH_RESULTS}/model_{fold}"
+    model = Model(
+        input_dim_genes=model_paramerers["p_gene"],
+        input_dim_metab=model_paramerers["p_metab"],
+        input_patient_features_dim=model_paramerers["p_static"],
+        n_timepoints=model_paramerers["n_timepoints"],
+        model_config=config_dict["model_params"]
+    ).to(DEVICE)
+    model.load_state_dict(torch.load(path))
+
     # apply feature preprocessing
     dict_arrays_preproc = preprocess_transform(
         copy.deepcopy(dict_arrays), all_scalers[fold], config_dict

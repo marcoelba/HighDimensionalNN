@@ -1,5 +1,7 @@
 import configparser
 import re
+from pathlib import Path
+import argparse
 
 
 def read_config(path_to_config="./config.ini"):
@@ -67,6 +69,23 @@ def read_config(path_to_config="./config.ini"):
     integers = dict(config.items('model_params_int')).keys()
     for param in integers:
         config_dict['model_params'][param] = config.getint('model_params_int', param)
+
+    return config_dict
+
+
+def get_config():
+
+    # read input arguments from console
+    parser = argparse.ArgumentParser(description='Run program with custom config and modules')
+    parser.add_argument('-c', '--config', required=True, help='Path to config.ini file')
+    args = parser.parse_args()
+
+    # Load config file
+    config_path = Path(args.config)
+    if not config_path.exists():
+        print(f"Error: Config file not found: {config_path}")
+        sys.exit(1)
+    config_dict = read_config(config_path)
 
     return config_dict
 

@@ -219,6 +219,7 @@ for time_point in range(n_timepoints):
         shap.plots.waterfall(explanation, show=False, max_display=25)
         fig.set_size_inches(20, 15)  # change after because waterfall resize the fig
         # plt.show()
+        plt.title(f"Patient {patient_id} - Shapley values - Time {time_point}", loc='left', fontsize=20)
         fig.savefig(f"{path_patient_plots}/features_shapley_time_{time_point+1}.pdf", format="pdf")
         plt.close()
 

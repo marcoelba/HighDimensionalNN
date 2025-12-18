@@ -18,25 +18,24 @@ from src.utils import data_loading_wrappers
 
 # generate linear regression data
 n = 100
-p = 3
+p = 4
 
 # if correlated
+np.random.seed(34)
 X = np.random.randn(n, p)
+
 cov_matrix = np.zeros([p, p])
 np.fill_diagonal(cov_matrix, 1.)
-# cor x1, x2
-cov_matrix[0, 1] = cov_matrix[1, 0] = 0.98
 
-np.round(np.cov(X.dot(np.linalg.cholesky(cov_matrix).transpose()), rowvar=False), 3)
-np.round(np.corrcoef(X.dot(np.linalg.cholesky(cov_matrix).transpose()), rowvar=False), 3)
+# cor x1, x2
+cov_matrix[0, 1] = cov_matrix[1, 0] = 0.9
 
 X = X.dot(np.linalg.cholesky(cov_matrix).transpose())
-y = X.dot([1., 0., 1.]) + np.random.randn(n) * 0.2
+y = X.dot(np.ones(p)) + np.random.randn(n) * 0.2
 y = y[..., None]
 
 # ----------------------- OLS ------------------------
 np.linalg.inv(X.transpose().dot(X)).dot(X.transpose().dot(y))
-# ~[1., .1, .1]
 
 # ----------------------- NN ------------------------
 class LinearModel(nn.Module):
@@ -70,7 +69,7 @@ model_nn = LinearModel(p).to(device)
 optimizer = optim.Adam(model_nn.parameters(), lr=1e-3)
 
 # Training Loop
-num_epochs = 2000
+num_epochs = 1500
 
 trainer = training_wrapper.Training(dataloader)
 trainer.training_loop(model_nn, optimizer, num_epochs)
@@ -90,10 +89,12 @@ class EnsembleModel(torch.nn.Module):
         return output
 
 
+# shap model
 model_shap = EnsembleModel(model_nn)
-base_value = model_shap(*data_tensor).mean().detach().item()
 
+base_value = model_shap(*data_tensor).mean().detach().item()
 explainer = shap.GradientExplainer(model_shap, X_tensor)
+
 shap_values = explainer.shap_values(X_tensor)
 shap_values.shape
 shap_values = shap_values[..., -1]
@@ -116,9 +117,7 @@ shap.plots.waterfall(explanation, show=True)
 
 # new samples - 3 different observations
 new_data = torch.tensor(np.array([
-    [0., 0., 0.],
-    [1., 1.1, -1.],
-    [2., 1.9, 0.]
+    [1., 1.1, -1., 0.5],
     ]),
     dtype=torch.float32
 )
@@ -127,6 +126,9 @@ model_nn([new_data, new_data])
 shap_values = explainer.shap_values(new_data)
 shap_values.shape
 shap_values = shap_values[..., -1]
+
+np.round(shap_values, 3)
+# array([[ 0.908,  0.97 , -1.024,  0.471]])
 
 row_id = 2
 explanation = shap.Explanation(
@@ -138,50 +140,179 @@ shap.plots.waterfall(explanation, show=True)
 # one standard deviation corresponds to a change according to the estimated shapley value
 
 
-# --------------------------------------------------------------------------
-# Using Kernel Shap, which does not account for correlation in the features
-# --------------------------------------------------------------------------
+# --------------------------------------------------
+# Try with conditional expectations
+# Sample background data from the conditional distribution 
+Sigma_1 = cov_matrix[0:1, 0:1]
+Sigma_2 = cov_matrix[1:, 1:]
+Sigma_12 = cov_matrix[0:1, 1:]
+Sigma_21 = Sigma_12.transpose()
 
-# SHAP explanation
-def model_shap(x):
-    x = torch.Tensor(x)
-    pred = model_nn([x, x]).detach().numpy()
-    return pred
+# fix a value for x1
+x1 = new_data[0][0].item()
 
-model_shap(X)
+mu_cond = Sigma_12 * 1/Sigma_1 * (x1)
+cov_cond = Sigma_2 - Sigma_21 * 1/Sigma_1 * Sigma_12
 
-base_value = model_shap(X).mean()
+np.random.seed(34)
+X_cond = np.random.randn(n, p - 1)
+X_cond = X_cond.dot(np.linalg.cholesky(cov_cond).transpose()) + mu_cond
+X_cond = np.concatenate([np.ones([n, 1]) * x1, X_cond], axis=1)
+X_cond_tensor = torch.tensor(X_cond, dtype=torch.float32)
 
-explainer = shap.KernelExplainer(model_shap, X)
-shap_values = explainer.shap_values(X)
-shap_values.shape
-shap_values = shap_values[..., -1]
+# calculate shap values
+cond_base_value = model_shap(*[X_cond_tensor, X_cond_tensor]).mean().detach().item()
+explainer = shap.GradientExplainer(model_shap, X_cond_tensor)
 
-shap.summary_plot(
-    shap_values,
-    features=X,
-    show=True
+cond_shap_values = explainer.shap_values(new_data)
+cond_shap_values.shape
+cond_shap_values = cond_shap_values[..., -1]
+np.round(cond_shap_values, 3)
+
+
+# ----------------------------------------------------------------------------
+# ----------------------- Manual Gradient Explainer --------------------------
+# ----------------------------------------------------------------------------
+def gradient_shap_minimal(model, background_data, x_explain, n_steps=10):
+    """
+    Minimal implementation of GradientExplainer (Expected Gradients).
+    
+    Args:
+        model: PyTorch nn.Module (must be differentiable)
+        background_data: (n_background, n_features) reference dataset as torch.Tensor
+        x_explain: (n_features,) instance to explain as torch.Tensor
+        n_steps: number of steps in path integral
+        
+    Returns:
+        shap_values: (n_features,) SHAP values
+        baseline: expected value
+    """
+    
+    # Add batch dimension if needed
+    if x_explain.dim() == 1:
+        x_explain = x_explain.unsqueeze(0)
+    
+    # 1. Baseline: expected value over background data
+    with torch.no_grad():
+        baseline = model(background_data).mean().item()
+    
+    # 2. Sample baselines from background data
+    n_background = len(background_data)
+    indices = torch.randperm(n_background)
+    
+    baselines = background_data[indices]
+    x_explain_rep = x_explain.repeat(n_background, 1)  # Repeat for each baseline
+    
+    # 3. Create interpolation paths
+    alphas = torch.linspace(0, 1, n_steps + 1)[1:]  # Skip alpha=0
+    alphas = alphas.view(-1, 1, 1)  # Shape: (n_steps, 1, 1) for broadcasting
+    
+    # Initialize attribution accumulator
+    attribution = torch.zeros_like(x_explain)
+    
+    # 4. Compute path integral for each baseline
+    for i, baseline_i in enumerate(baselines):
+        # Interpolation: x(α) = baseline + α * (x - baseline)
+        # We'll compute gradients at each α
+        
+        for alpha in alphas:
+            # Interpolated point
+            x_interp = baseline_i + alpha * (x_explain_rep[i] - baseline_i)
+            x_interp.requires_grad_(True)
+            
+            # Forward pass
+            output = model(x_interp.unsqueeze(0))
+            
+            # Backward pass
+            if output.dim() == 0:
+                output.backward()
+            else:
+                output.sum().backward()
+            
+            # Expected Gradients formula: (x - baseline) * gradient
+            # Use trapezoidal rule weights
+            if alpha == alphas[0]:
+                weight = 0.5 * alpha.item()  # First point
+            elif alpha == alphas[-1]:
+                weight = 0.5 * (alpha.item() - alphas[-2].item())  # Last point
+            else:
+                weight = alpha.item() - alphas[torch.where(alphas == alpha)[0][0] - 1].item()  # Middle
+            
+            attribution += weight * (x_explain_rep[i] - baseline_i) * x_interp.grad
+            
+            # Clean up
+            x_interp.grad = None
+    
+    # 5. Average over baselines and steps
+    shap_value = attribution / n_background
+    
+    return shap_value.detach().numpy(), baseline
+
+
+gradient_shap_minimal(
+    model=model_nn,
+    background_data=X_tensor,
+    x_explain=new_data,
+    n_steps=100
 )
-shap_values_std = shap_values.std(axis=0)
-shap_values_std
 
-row_id = 0
-explanation = shap.Explanation(
-    values=shap_values[row_id, :],
-    base_values=base_value,
-    data=X[row_id, :]
+explainer = shap.GradientExplainer(model_shap, X_tensor)
+cond_shap_values = explainer.shap_values(new_data)
+cond_shap_values.shape
+cond_shap_values = cond_shap_values[..., -1]
+np.round(cond_shap_values, 3)
+
+# check single steps
+new_data = [0.9, 1.1, -0.9, 0.5]
+
+new_data = torch.tensor(np.array([
+    new_data,
+    ]),
+    dtype=torch.float32
 )
-shap.plots.waterfall(explanation, show=True)
 
-
-shap_values = explainer.shap_values(new_data.numpy())
-shap_values.shape
-shap_values = shap_values[..., -1]
-
-row_id = 2
-explanation = shap.Explanation(
-    values=shap_values[row_id, :],
-    base_values=base_value,
-    data=new_data.numpy()[row_id, :]
+baseline_i = torch.tensor(np.array([
+    [1.0, -1.0, -0.5, 0.],
+    ]),
+    dtype=torch.float32
 )
-shap.plots.waterfall(explanation, show=True)
+
+n_steps = 100
+alphas = torch.linspace(0, 1, n_steps + 1)[1:]  # Skip alpha=0
+alphas = alphas.view(-1, 1, 1)  # Shape: (n_steps, 1, 1) for broadcasting
+
+attribution = torch.zeros_like(new_data)
+
+# 4. Compute path integral for each baseline
+# Interpolation: x(α) = baseline + α * (x - baseline)
+# We'll compute gradients at each α
+
+for alpha in alphas:
+    # Interpolated point
+    x_interp = baseline_i + alpha * (new_data - baseline_i)
+    x_interp.requires_grad_(True)
+    
+    # Forward pass
+    output = model_nn(x_interp.unsqueeze(0))
+    
+    # Backward pass
+    if output.dim() == 0:
+        output.backward()
+    else:
+        output.sum().backward()
+    
+    # Expected Gradients formula: (x - baseline) * gradient
+    # Use trapezoidal rule weights
+    if alpha == alphas[0]:
+        weight = 0.5 * alpha.item()  # First point
+    elif alpha == alphas[-1]:
+        weight = 0.5 * (alpha.item() - alphas[-2].item())  # Last point
+    else:
+        weight = alpha.item() - alphas[torch.where(alphas == alpha)[0][0] - 1].item()  # Middle
+    
+    attribution += weight * (new_data - baseline_i) * x_interp.grad
+    
+    # Clean up
+    x_interp.grad = None
+
+attribution

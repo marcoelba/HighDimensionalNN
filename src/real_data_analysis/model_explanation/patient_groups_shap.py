@@ -11,6 +11,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.cluster import KMeans
+from sklearn.cluster import HDBSCAN
 
 from src.utils.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
 from src.utils.features_preprocessing import preprocess_train, preprocess_transform
@@ -42,10 +43,13 @@ config_dict = read_config(config_path)
 # --------------------------------------------------------
 PATH_RESULTS = config_dict["script_parameters"]["results_folder"]
 PATH_DATA = config_dict["script_parameters"]["data_folder"]
+CLUSTER_ALG = config_dict["script_parameters"]["shap_clustering_algorithm"]
+
 DEVICE = torch.device(config_dict["training_parameters"]["device"])
 N_FOLDS = config_dict["training_parameters"]["n_folds"]
 FEATURES_KEYS = list(config_dict["preprocess"].keys())[:-1]
 n_clusters = 3
+min_cluster_size = 3
 
 PATH_PLOTS = config_dict["script_parameters"]["patient_specific_plots_folder"]
 os.makedirs(PATH_PLOTS, exist_ok = True)
@@ -229,6 +233,7 @@ for time_point in range(n_timepoints):
         shap.plots.waterfall(explanation, show=False, max_display=25)
         fig.set_size_inches(20, 15)  # change after because waterfall resize the fig
         # plt.show()
+        plt.title(f"Patient {patient_id} - Grouped shapley values - Time {time_point}", fontsize=20, loc='left')
         fig.savefig(f"{path_patient_plots}/groups_features_shapley_time_{time_point+1}.pdf", format="pdf")
         plt.close()
 
@@ -265,8 +270,8 @@ for time_point in range(n_timepoints):
     # take sum over genes and metabolites
     mean_genes_shap = np.abs(np.array(np.array_split(genes_shap, N_FOLDS, axis=0)).mean(axis=0)).sum(axis=1)
     mean_metab_shap = np.abs(np.array(np.array_split(metab_shap, N_FOLDS, axis=0)).mean(axis=0)).sum(axis=1)
-    mean_patient_clin_shap = np.array(np.array_split(patient_clin_shap, N_FOLDS, axis=0)).mean(axis=0)
-    mean_baseline_shap = np.array(np.array_split(baseline_shap, N_FOLDS, axis=0)).mean(axis=0)
+    mean_patient_clin_shap = np.abs(np.array(np.array_split(patient_clin_shap, N_FOLDS, axis=0))).mean(axis=0)
+    mean_baseline_shap = np.abs(np.array(np.array_split(baseline_shap, N_FOLDS, axis=0))).mean(axis=0)
 
     # make one array for shap and data
     mean_shap = np.concatenate([
@@ -316,25 +321,22 @@ for time_point in range(n_timepoints):
         shap.plots.bar(explanation, show=False, max_display=25)
         fig.set_size_inches(20, 15)  # change after because waterfall resize the fig
         # plt.show()
+        plt.title(f"Patient {patient_id} - Grouped ABS shapley values - Time {time_point}", fontsize=20, loc='left')
         fig.savefig(f"{path_patient_plots}/abs_groups_features_shapley_time_{time_point+1}.pdf", format="pdf")
         plt.close()
 
 
 # -------------- Plot clusters of shapley values ------------------
-def cluster_sum(patient_shap_array, n_clusters=3):
-    kmeans = KMeans(n_clusters=n_clusters, random_state=0, n_init="auto").fit(patient_shap_array)
+def cluster_sum(patient_shap_array, algorithm):
+    if algorithm == "kmeans":
+        clustering = KMeans(n_clusters=n_clusters, random_state=0, n_init="auto").fit(patient_shap_array)
+    elif algorithm == "hdbscan":
+        clustering = HDBSCAN(min_cluster_size=min_cluster_size).fit(patient_shap_array)
+    
     shap_sum = []
-    for cl in np.unique(kmeans.labels_):
-        shap_sum.append(patient_shap_array[kmeans.labels_ == cl].sum())
-    return np.array(shap_sum)
-
-# change features names
-all_features_names = np.concatenate([
-    np.array([f"genes_cluster_{cl+1}" for cl in range(n_clusters)]),
-    np.array([f"metab_cluster_{cl+1}" for cl in range(n_clusters)]),
-    np.array(config_dict["data_arrays"]["static_patient_features"]),
-    np.array(["Baseline"])
-])
+    for cl in np.unique(clustering.labels_):
+        shap_sum.append(patient_shap_array[clustering.labels_ == cl].sum())
+    return np.array(shap_sum), clustering.labels_
 
 
 for time_point in range(n_timepoints):
@@ -374,23 +376,34 @@ for time_point in range(n_timepoints):
         sum_notna = patient_not_na.sum()
         slice_end += sum_notna
 
-        # mean over the multiple meals
-        # sum over the features contributions
-        mean_patient_data = np.concatenate([
-            np.array([np.nan for cl in range(n_clusters)]),
-            np.array([np.nan for cl in range(n_clusters)]),
-            dict_arrays["static_patient_features"][patient_id][patient_not_na==1].mean(axis=0).squeeze(),
-            np.exp(dict_arrays["y_baseline"][patient_id][patient_not_na==1]).mean(axis=0)[..., -1],
-        ])
-
         # make clusters of genes and metabolites shapley values
         patient_shap_genes = mean_genes_shap[slice_start:slice_end].mean(axis=0)
         patient_shap_metab = mean_metab_shap[slice_start:slice_end].mean(axis=0)
         patient_shap_clin = mean_patient_clin_shap[slice_start:slice_end].mean(axis=0)
         patient_shap_baseline = mean_baseline_shap[slice_start:slice_end].mean(axis=0)
 
-        patient_shap_genes_cluster = cluster_sum(patient_shap_genes[..., None], n_clusters)
-        patient_shap_metab_cluster = cluster_sum(patient_shap_metab[..., None], n_clusters)
+        patient_shap_genes_cluster, clusters_gene = cluster_sum(patient_shap_genes[..., None], algorithm=CLUSTER_ALG)
+        patient_shap_metab_cluster, clusters_metab = cluster_sum(patient_shap_metab[..., None], algorithm=CLUSTER_ALG)
+
+        n_clusters_gene = len(np.unique(clusters_gene))
+        n_clusters_metab = len(np.unique(clusters_metab))
+
+        # make features names according to the number of clusters
+        cluster_features_names = np.concatenate([
+            np.array([f"genes in cluster {cl+1}" for cl in range(n_clusters_gene)]),
+            np.array([f"metabs in cluster {cl+1}" for cl in range(n_clusters_metab)]),
+            np.array(config_dict["data_arrays"]["static_patient_features"]),
+            np.array(["Baseline"])
+        ])
+
+        # mean over the multiple meals
+        # sum over the features contributions
+        mean_patient_data = np.concatenate([
+            np.array([sum(clusters_gene == cl) for cl in np.unique(clusters_gene)]),
+            np.array([sum(clusters_metab == cl) for cl in np.unique(clusters_metab)]),
+            dict_arrays["static_patient_features"][patient_id][patient_not_na==1].mean(axis=0).squeeze(),
+            np.exp(dict_arrays["y_baseline"][patient_id][patient_not_na==1]).mean(axis=0)[..., -1],
+        ])
 
         # make one array for shap and data
         patient_shap = np.concatenate([
@@ -408,13 +421,14 @@ for time_point in range(n_timepoints):
             values=patient_shap,
             base_values=mean_base_value,
             data=mean_patient_data,
-            feature_names=all_features_names
+            feature_names=cluster_features_names
         )
 
         fig = plt.figure()
         shap.plots.waterfall(explanation, show=False, max_display=25)
         fig.set_size_inches(20, 15)  # change after because waterfall resize the fig
         # plt.show()
+        plt.title(f"Patient {patient_id} - Clustered shapley values - Time {time_point}", fontsize=20, loc='left')
         fig.savefig(f"{path_patient_plots}/clusters_features_shapley_time_{time_point+1}.pdf", format="pdf")
         plt.close()
 

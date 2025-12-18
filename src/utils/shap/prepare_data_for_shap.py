@@ -5,7 +5,7 @@ from src.utils.features_preprocessing import preprocess_transform
 from src.utils import data_loading_wrappers
 
 
-def prepare_data_for_shap(dict_shap, all_scalers, config_dict, patient_index=None, verbose=False):
+def prepare_data_for_shap(dict_feature_arrays, all_scalers, config_dict, patient_index=None, verbose=False):
 
     DEVICE = torch.device(config_dict["training_parameters"]["device"])
     FEATURES_KEYS = list(config_dict["preprocess"].keys())[:-1]
@@ -16,7 +16,7 @@ def prepare_data_for_shap(dict_shap, all_scalers, config_dict, patient_index=Non
     for fold in range(N_FOLDS):
         # apply feature preprocessing
         dict_arrays_preproc = preprocess_transform(
-            copy.deepcopy(dict_shap), all_scalers[fold], config_dict, verbose=verbose
+            copy.deepcopy(dict_feature_arrays), all_scalers[fold], config_dict, verbose=verbose
         )
         if dict_arrays_preproc["y_baseline"].shape[-1] == 1:
             dict_arrays_preproc["y_baseline"] = dict_arrays_preproc["y_baseline"][..., 0]
