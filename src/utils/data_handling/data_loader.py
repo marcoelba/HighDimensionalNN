@@ -49,6 +49,10 @@ class CustomData:
         print("\ngenes features extracted!")
         print("Shape genes array: ", X_gene.shape)
 
+        if X_gene.shape[-1] != len(self.features_names["genes_names"]):
+            raise ValueError("Genes dimension != genes names length")
+        self.p_gene = X_gene.shape[-1]
+
         X_metab = convert_to_static_multidim_array(
             df_metab_data,
             baseline_time=0,
@@ -60,6 +64,10 @@ class CustomData:
         )
         print("\nMetabs features extracted!")
         print("Shape metab array: ", X_metab.shape)
+
+        if X_metab.shape[-1] != len(self.features_names["metab_names"]):
+            raise ValueError("Metab dimension != metabolites names length")
+        self.p_metab = X_metab.shape[-1]
 
         # extract static patient features
         print("\n-------------------------------")
@@ -77,6 +85,7 @@ class CustomData:
         )
         print("\nX_static features extracted!")
         print("Shape patient features array: ", X_static.shape)
+        self.p_static = X_static.shape[-1]
 
         print("\n-------------------------------")
         print(" Extraction of outcome")
@@ -97,9 +106,9 @@ class CustomData:
         self.n_individuals, self.n_measurements, self.n_timepoints, _ = y.shape
 
         print("\n ----------------- Dimensions: ---------------------- ")
-        print("n_individuals: ", n_individuals)
-        print("n_timepoints: ", n_timepoints - 1)
-        print("n_measurements: ", n_measurements)
+        print("n_individuals: ", self.n_individuals)
+        print("n_timepoints: ", self.n_timepoints - 1)
+        print("n_measurements: ", self.n_measurements)
         print("\n ---------------------------------- ")
 
         # y0 (y at baseline) is actually an additional feature, because it is measured before any intervention

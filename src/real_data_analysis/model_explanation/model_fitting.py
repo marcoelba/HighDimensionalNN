@@ -1,9 +1,6 @@
 # Data analysis
 import pickle
 import os
-import copy
-from pathlib import Path
-import argparse
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -11,54 +8,53 @@ import pandas as pd
 import torch
 import torch.optim as optim
 
-from src.utils.convert_to_array import convert_to_static_multidim_array, convert_to_longitudinal_multidim_array
-from src.utils.features_preprocessing import preprocess_train, preprocess_transform
-from src.utils.config_reader import read_config
-from src.utils.get_arrays import load_and_process_data
-from src.utils import training_wrapper
-from src.utils import data_loading_wrappers
+from src.utils.config_reader import get_config
+from src.utils.data_handling.data_loader import CustomData
+from src.utils.ensemble_pipeline import EnsemblePipeline
+from src.utils.features_preprocessing import Preprocessing
 
 # Script specific modules
 # Must be in the same directory where model_fitting.py is run
 from full_model import Model
 
 
-# read input arguments from console
-parser = argparse.ArgumentParser(description='Run program with custom config and modules')
-parser.add_argument('-c', '--config', required=True, help='Path to config.ini file')
-args = parser.parse_args()
-
-# Load config file
-config_path = Path(args.config)
-if not config_path.exists():
-    print(f"Error: Config file not found: {config_path}")
-    sys.exit(1)
-config_dict = read_config(config_path)
-
+# get config from console input arguments
+config_dict = get_config()
 PATH_RESULTS = config_dict["script_parameters"]["results_folder"]
 DEVICE = torch.device(config_dict["training_parameters"]["device"])
 os.makedirs(config_dict["script_parameters"]["results_folder"], exist_ok = True)
 
-# --------------------------------------------------------
-# -------------------- Load data -------------------------
-# --------------------------------------------------------
-dict_arrays = load_and_process_data(config_dict, data_dir=config_dict["script_parameters"]["data_folder"])
-n_individuals = dict_arrays["genes"].shape[0]
-p_gene = dict_arrays["genes"].shape[2]
-p_metab = dict_arrays["metabolites"].shape[2]
-p_static = dict_arrays["static_patient_features"].shape[2]
-n_timepoints = dict_arrays["y_target"].shape[2]
+# Load data
+data = CustomData(config_dict, data_dir=config_dict["script_parameters"]["data_folder"])
+dict_arrays = data.load_and_process_data(data_dir=config_dict["script_parameters"]["data_folder"])
 
-model_paramerers = dict(
-    p_gene=p_gene,
-    p_metab=p_metab,
-    p_static=p_static,
-    n_timepoints=n_timepoints
+# Model definition
+model_parameters = dict(
+    p_gene=data.p_gene,
+    p_metab=data.p_metab,
+    p_static=data.p_static,
+    n_timepoints=data.n_timepoints
 )
-with open(f"{PATH_RESULTS}/model_paramerers", "wb") as fp:   # Pickling predictions
+with open(
+    os.path.join(PATH_RESULTS, config_dict["file_names"]["pickle_model_dimension_definition"]),
+    "wb") as fp:
     pickle.dump(model_paramerers, fp)
 
-print("\n preprocessing dict: ", config_dict["preprocess"])
+model = Model(
+    input_dim_genes=model_parameters["p_gene"],
+    input_dim_metab=model_parameters["p_metab"],
+    input_patient_features_dim=model_parameters["p_static"],
+    n_timepoints=model_parameters["n_timepoints"],
+    model_config=config_dict["model_params"]
+)
+
+features_preprocessing = Preprocessing(config_dict=config_dict)
+
+model_pipeline = EnsemblePipeline(
+    model,
+    features_preprocessing,
+    config_dict
+)
 
 # ------------- k-fold Cross-Validation -------------
 all_train_losses = []

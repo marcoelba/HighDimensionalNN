@@ -1,17 +1,24 @@
 # Ensemble models
 import pickle
+import copy
 
 import torch
 import numpy as np
 
+from src.utils.data_handling import train_data_batching
+from src.utils import training_wrapper
+
 
 class EnsemblePipeline:
-    def __init__(self, model_class, config_dict):
+    def __init__(self, model_definition, features_preprocessing, config_dict):
         self.config_dict = config_dict
         self.path_results = config_dict["script_parameters"]["results_folder"]
         self.n_folds = config_dict["training_parameters"]["n_folds"]
         self.device = torch.device(config_dict["training_parameters"]["device"])
-
+        self.model_definition = model_definition
+        self.features_preprocessing = features_preprocessing
+        self.all_scalers = []
+        
         # Load scalers
         try:
             self.scalers = load_scalers()
@@ -20,25 +27,17 @@ class EnsemblePipeline:
             print(f"Pickle scalers not loaded: {e}")
         # model dimension parameters
         try:
-            self.model_parameters = load_model_paramerers()
+            self.model_parameters = load_model_dim_parameters()
         except Exception as e:
             self.model_parameters = None
             print(f"Pickle model_parameters not loaded: {e}")
+        
+    def load_trained_models(self):
 
-        # Load torch models
         self.all_models = []
         for fold in range(self.n_folds):
             path = f"{self.path_results}/model_{fold}"
-
-            model = model_class(
-                input_dim_genes=self.model_parameters["p_gene"],
-                input_dim_metab=self.model_parameters["p_metab"],
-                input_patient_features_dim=self.model_parameters["p_static"],
-                n_timepoints=self.model_parameters["n_timepoints"],
-                model_config=self.config_dict["model_params"]
-            ).to(self.device)
-            model.load_state_dict(torch.load(path))
-
+            self.model_definition.to(self.device).load_state_dict(torch.load(path))
             self.all_models.append(model)
         print(f"Fold models loaded")
         self.torch_models = torch.nn.ModuleList(self.all_models)
@@ -48,10 +47,96 @@ class EnsemblePipeline:
             x = pickle.load(fp)
         return x
 
-    def load_model_paramerers(self):
-        with open(os.path.join(self.path_results, "model_parameters"), "rb") as fp:
+    def load_model_dim_parameters(self):
+        with open(
+            os.path.join(self.path_results, config_dict["file_names"]["pickle_model_dimension_definition"]),
+            "rb") as fp:
             x = pickle.load(fp)
         return x
+    
+    def train(self, dict_arrays, n_individuals):
+        train_indices = np.random.permutation(np.arange(0, n_individuals))
+        # Split into k folds
+        folds = np.array_split(train_indices, self.n_folds)
+
+        for fold in range(self.n_folds):
+            print(f"Running k-fold validation on fold {fold+1} of {self.n_folds}")
+
+            # mask current fold for use in validation
+            train_mask = np.ones(n_individuals, dtype=int)
+            train_mask[folds[fold]] = False
+
+            # Split
+            dict_train = {name: arr[train_mask == 1] for name, arr in dict_arrays.items()}
+            dict_val = {name: arr[train_mask == 0] for name, arr in dict_arrays.items()}
+
+            # train and apply feature preprocessing
+            self.features_preprocessing.train(dict_train)
+            self.all_scalers.append(self.features_preprocessing)
+
+            dict_train_preproc = self.features_preprocessing.transform(dict_train)
+            dict_val_preproc = self.features_preprocessing.transform(dict_train)
+
+            # get tensors
+            tensor_data_train = [torch.FloatTensor(array).to(DEVICE) for key, array in dict_train_preproc.items()]
+            tensor_data_val = [torch.FloatTensor(array).to(DEVICE) for key, array in dict_val_preproc.items()]
+
+            # Validation batch size - just do one
+            y_val_shape = dict_val_preproc["y_target"].shape
+            batch_size_val = y_val_shape[0] * y_val_shape[1]
+
+            # Train batch size
+            y_train_shape = dict_train_preproc["y_target"].shape
+
+            # data loaders
+            train_dataloader = train_data_batching.make_data_loader(
+                *tensor_data_train,
+                batch_size=config_dict["training_parameters"]["batch_size"],
+                feature_dimensions=-1,
+                reshape=True,
+                drop_missing=True
+            )
+
+            val_dataloader = train_data_batching.make_data_loader(
+                *tensor_data_val,
+                batch_size=batch_size_val,
+                feature_dimensions=-1,
+                reshape=True,
+                drop_missing=True
+            )
+
+            # ---------------------- Model Setup ----------------------
+            model = copy.deepcopy(self.model_definition)
+            optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+            # Training Loop
+            trainer = training_wrapper.Training(train_dataloader, val_dataloader, noisy_gradient=False)
+            trainer.training_loop(
+                model,
+                optimizer,
+                config_dict["training_parameters"]["num_epochs"],
+                gradient_noise_std=0.0
+            )
+
+            # use the model at the best validation iteration
+            model.load_state_dict(trainer.best_model.state_dict())
+
+            # save model?
+            if config_dict["training_parameters"]["save_models"]:
+                path = os.path.join(PATH_RESULTS, f"model_{fold}")
+                torch.save(model.state_dict(), path)
+
+            all_models.append(model)
+            all_best_epochs.append(trainer.best_iteration)
+
+            # Validate
+            model.eval()
+            with torch.no_grad():
+                pred = model(val_dataloader.dataset.arrays)
+                all_predictions.append(pred[-1].numpy())
+                all_true.append(val_dataloader.dataset.arrays[-1].numpy())
+
+        return
 
     # def load_shap_values(self):
     #     with open(os.path.join(self.path_results, "all_shap_values"), "rb") as fp:

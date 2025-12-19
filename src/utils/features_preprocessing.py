@@ -5,151 +5,111 @@ import copy
 from sklearn.preprocessing import StandardScaler
 
 
-def preprocess_train(dict_train: dict, dict_val: dict, config_dict: dict):
-    """
-    Preprocess arrays
+class Preprocessing:
+    def __init__(self, config_dict: dict):
+        self.config_dict = config_dict
+        self.features_to_preprocess = config_dict["preprocess"]
+        self.data_arrays = config_dict["data_arrays"]
+
+        self.scalers = dict()
     
-    Parameters
-    ----------
-    list_train : dict of ndarray
-        Training array of shape (n_samples, n_meals, n_features)
-    list_val : dict of ndarray
-        Validation array of shape (n_samples, n_meals, n_features)
-    config_dict : dict
-        Config Dictionary
-    """
-    
-    features_to_preprocess = config_dict["preprocess"]
-    data_arrays = config_dict["data_arrays"]
-
-    all_arrays = dict_train.keys()
-    # Initialize scalers
-    scalers = dict()
-    dict_train_preproc = dict()
-    dict_val_preproc = dict()
-
-    for array in all_arrays:
-
-        train_array = dict_train[array]
-        val_array = dict_val[array]
-        n_features = train_array.shape[-1]
-
-        if array in features_to_preprocess:
-            scalers[array] = dict()
-
-            if features_to_preprocess[array] == 'all':
-                features_to_preprocess_idx = [jj for jj in range(n_features)]
-            else:
-                features_to_preprocess_idx = [jj for jj in range(n_features) if data_arrays[array][jj] in features_to_preprocess[array]]
-            
-            # make arrays flat
-            train_array_flat = train_array.reshape(-1, n_features)
-            val_array_flat = val_array.reshape(-1, n_features)
-
-            # Process features
-            for idx in features_to_preprocess_idx:
-                # Extract the feature column
-                train_feature = copy.deepcopy(train_array_flat[:, idx])
-                val_feature = copy.deepcopy(val_array_flat[:, idx])
-
-                # Remove NaN values for fitting
-                train_feature_no_nan = train_feature[~np.isnan(train_feature)]
-                val_feature_no_nan = val_feature[~np.isnan(val_feature)]
-                
-                if len(train_feature_no_nan) > 0:
-                    # Fit scaler on training data
-                    scaler = StandardScaler()
-                    scaler.fit(train_feature_no_nan.reshape(-1, 1))
-                    
-                    # Transform both train and validation
-                    train_array_flat[~np.isnan(train_feature), idx] = scaler.transform(
-                        train_feature_no_nan.reshape(-1, 1)
-                    ).flatten()
-                    
-                    val_array_flat[~np.isnan(val_feature), idx] = scaler.transform(
-                        val_feature_no_nan.reshape(-1, 1)
-                    ).flatten()
-                    
-                    scalers[array][idx] = scaler
-        
-            # Reshape back to original shape
-            train_processed = train_array_flat.reshape(train_array.shape)
-            val_processed = val_array_flat.reshape(val_array.shape)
-        
-            dict_train_preproc[array] = train_processed
-            dict_val_preproc[array] = val_processed
-
+    def _get_features_indeces(self, array_name, n_features):
+        if self.features_to_preprocess[array_name] == 'all':
+            features_to_preprocess_idx = [jj for jj in range(n_features)]
         else:
-            dict_train_preproc[array] = train_array
-            dict_val_preproc[array] = val_array
-    
-    return dict_train_preproc, dict_val_preproc, scalers
-
-
-def preprocess_transform(dict_new_data: dict, scalers: dict, config_dict: dict, verbose=False):
-    """
-    Preprocess new data using the already trained scalers
-    
-    Parameters
-    ----------
-    dict_new_data : dict of ndarray
-        Training array of shape (n_samples, n_meals, n_features)
-    scalers : dictionary of scalers
-        Trained scalers
-    config_dict : dict
-        config Dictionary
-    """
-
-    features_to_preprocess = config_dict["preprocess"]
-    data_arrays = config_dict["data_arrays"]
-
-    all_arrays = dict_new_data.keys()
-    dict_test_preproc = dict()
-
-    for array in all_arrays:
-
-        if verbose:
-            print(f"\n ------------ Processing feature {array} ------------")
+            features_to_preprocess_idx = [jj for jj in range(n_features) if self.data_arrays[array_name][jj] in self.features_to_preprocess[array_name]]
         
-        test_array = dict_new_data[array]
-        n_features = test_array.shape[-1]
+        return features_to_preprocess_idx
 
-        if array in features_to_preprocess:
+    def train(self, dict_arrays: dict):
+        """
+        Preprocess of longitudinal arrays
+        
+        Parameters
+        ----------
+        dict_arrays : dict of ndarray
+            Training array of shape (n_samples, n_meals, n_features)
+        """
+        all_arrays = dict_train.keys()
 
-            if features_to_preprocess[array] == 'all':
-                features_to_preprocess_idx = [jj for jj in range(n_features)]
-            else:
-                features_to_preprocess_idx = [jj for jj in range(n_features) if data_arrays[array][jj] in features_to_preprocess[array]]
+        for array in all_arrays:
 
-            # make arrays flat
-            test_array_flat = test_array.reshape(-1, n_features)
-            test_array_flat.shape
+            train_array = dict_train[array]
+            n_features = train_array.shape[-1]
+
+            if array in self.features_to_preprocess:
+                self.scalers[array] = dict()
+                features_to_preprocess_idx = self._get_features_indeces(self, array, n_features)
+                
+                # make arrays flat
+                train_array_flat = train_array.reshape(-1, n_features)
+
+                # Process features
+                for idx in features_to_preprocess_idx:
+                    # Extract the feature column
+                    train_feature = copy.deepcopy(train_array_flat[:, idx])
+
+                    # Remove NaN values for fitting
+                    train_feature_no_nan = train_feature[~np.isnan(train_feature)]
+                    
+                    if len(train_feature_no_nan) > 0:
+                        # Fit scaler on training data
+                        scaler = StandardScaler()
+                        scaler.fit(train_feature_no_nan.reshape(-1, 1))
+                        self.scalers[array][idx] = scaler
+        
+    def transform(self, dict_arrays: dict, verbose=False):
+        """
+        Preprocess new longitudinal data using the already trained scalers
+        
+        Parameters
+        ----------
+        dict_arrays : dict of ndarray
+            Training array of shape (n_samples, n_meals, n_features)
+        """
+
+        all_arrays = dict_arrays.keys()
+        dict_arrays_preproc = dict()
+
+        for array in all_arrays:
 
             if verbose:
-                print(f"NAs in feature: {np.isnan(test_array_flat).sum()}")
-
-            # Process features
-            for idx in features_to_preprocess_idx:
-
-                # Extract the feature column
-                feature = copy.deepcopy(test_array_flat[:, idx])
-
-                # Remove NaN values for fitting
-                feature_no_nan = feature[~np.isnan(feature)]
-                
-                if len(feature_no_nan) > 0:
-                    # Transform validation
-                    test_array_flat[~np.isnan(feature), idx] = scalers[array][idx].transform(
-                        feature_no_nan.reshape(-1, 1)
-                    ).flatten()
+                print(f"\n ------------ Processing feature {array} ------------")
             
-            # Reshape back to original shape
-            test_processed = test_array_flat.reshape(test_array.shape)
-            dict_test_preproc[array] = test_processed
-            if verbose:
-                print(f"NAs in feature AFTER processing: {np.isnan(test_array_flat).sum()}")
+            test_array = dict_arrays[array]
+            n_features = test_array.shape[-1]
 
-        else:
-            dict_test_preproc[array] = test_array
-    
-    return dict_test_preproc
+            if array in self.features_to_preprocess:
+
+                features_to_preprocess_idx = self._get_features_indeces(self, array, n_features)
+
+                # make arrays flat
+                test_array_flat = test_array.reshape(-1, n_features)
+
+                if verbose:
+                    print(f"NAs in feature: {np.isnan(test_array_flat).sum()}")
+
+                # Process features
+                for idx in features_to_preprocess_idx:
+
+                    # Extract the feature column
+                    feature = copy.deepcopy(test_array_flat[:, idx])
+                    # Remove NaN values for fitting
+                    feature_no_nan = feature[~np.isnan(feature)]
+                    
+                    if len(feature_no_nan) > 0:
+                        # Transform validation
+                        test_array_flat[~np.isnan(feature), idx] = self.scalers[array][idx].transform(
+                            feature_no_nan.reshape(-1, 1)
+                        ).flatten()
+                
+                # Reshape back to original shape
+                test_processed = test_array_flat.reshape(test_array.shape)
+                dict_arrays_preproc[array] = test_processed
+                if verbose:
+                    print(f"NAs in feature AFTER processing: {np.isnan(test_array_flat).sum()}")
+
+            else:
+                dict_arrays_preproc[array] = test_array
+        
+        return dict_arrays_preproc
