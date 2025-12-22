@@ -17,14 +17,16 @@ class EnsemblePipeline:
         self.device = torch.device(config_dict["training_parameters"]["device"])
         self.model_definition = model_definition
         self.features_preprocessing = features_preprocessing
-        self.all_scalers = []
-        
+
+        self.all_models = []
+
         # Load scalers
         try:
-            self.scalers = load_scalers()
+            self.all_scalers = load_scalers()
         except Exception as e:
-            self.scalers = None
+            self.all_scalers = []
             print(f"Pickle scalers not loaded: {e}")
+        
         # model dimension parameters
         try:
             self.model_parameters = load_model_dim_parameters()
@@ -34,7 +36,6 @@ class EnsemblePipeline:
         
     def load_trained_models(self):
 
-        self.all_models = []
         for fold in range(self.n_folds):
             path = f"{self.path_results}/model_{fold}"
             self.model_definition.to(self.device).load_state_dict(torch.load(path))
@@ -58,7 +59,10 @@ class EnsemblePipeline:
         train_indices = np.random.permutation(np.arange(0, n_individuals))
         # Split into k folds
         folds = np.array_split(train_indices, self.n_folds)
-
+        self.all_scalers = []
+        self.all_train_losses = []
+        self.all_val_losses = []
+        
         for fold in range(self.n_folds):
             print(f"Running k-fold validation on fold {fold+1} of {self.n_folds}")
 
@@ -75,7 +79,14 @@ class EnsemblePipeline:
             self.all_scalers.append(self.features_preprocessing)
 
             dict_train_preproc = self.features_preprocessing.transform(dict_train)
-            dict_val_preproc = self.features_preprocessing.transform(dict_train)
+            dict_val_preproc = self.features_preprocessing.transform(dict_val)
+
+            # remove last dimension for outcome with only one dimension
+            if dict_train_preproc["y_target"].shape[-1] == 1:
+                dict_train_preproc["y_target"] = dict_train_preproc["y_target"][..., 0]
+                dict_val_preproc["y_target"] = dict_val_preproc["y_target"][..., 0]
+                dict_train_preproc["y_baseline"] = dict_train_preproc["y_baseline"][..., 0]
+                dict_val_preproc["y_baseline"] = dict_val_preproc["y_baseline"][..., 0]
 
             # get tensors
             tensor_data_train = [torch.FloatTensor(array).to(DEVICE) for key, array in dict_train_preproc.items()]
@@ -84,7 +95,6 @@ class EnsemblePipeline:
             # Validation batch size - just do one
             y_val_shape = dict_val_preproc["y_target"].shape
             batch_size_val = y_val_shape[0] * y_val_shape[1]
-
             # Train batch size
             y_train_shape = dict_train_preproc["y_target"].shape
 
@@ -123,20 +133,41 @@ class EnsemblePipeline:
 
             # save model?
             if config_dict["training_parameters"]["save_models"]:
-                path = os.path.join(PATH_RESULTS, f"model_{fold}")
+                path = os.path.join(self.path_results, f"model_{fold}")
                 torch.save(model.state_dict(), path)
 
-            all_models.append(model)
-            all_best_epochs.append(trainer.best_iteration)
+            self.all_models.append(model)
 
             # Validate
-            model.eval()
-            with torch.no_grad():
-                pred = model(val_dataloader.dataset.arrays)
-                all_predictions.append(pred[-1].numpy())
-                all_true.append(val_dataloader.dataset.arrays[-1].numpy())
+            # model.eval()
+            # with torch.no_grad():
+            #     pred = model(val_dataloader.dataset.arrays)
+            #     all_predictions.append(pred[-1].numpy())
+            #     all_true.append(val_dataloader.dataset.arrays[-1].numpy())
 
-        return
+            self.all_train_losses.append(np.min(trainer.losses["train"]))
+            self.all_val_losses.append(np.min(trainer.losses["val"]))
+
+            # if saving loss traces
+            plot_name = f"train_val_loss_fold_{fold}.pdf"
+            self.__trace_plot(trainer, plot_name)
+        
+        # saving training results
+        self.__save_pickle(self, self.all_scalers, config_dict["saving_file_names"]["pickle_all_scalers"])
+        self.__save_pickle(self, self.all_train_losses, config_dict["saving_file_names"]["pickle_all_train_losses"])
+        self.__save_pickle(self, self.all_val_losses, config_dict["saving_file_names"]["pickle_all_val_losses"])
+
+    def __trace_plot(self, trainer, plot_name):
+        fig = plt.figure()
+        plt.plot(trainer.losses["train"], label="Train")
+        plt.plot(trainer.losses["val"], label="Val")
+        plt.legend()
+        fig.savefig(os.path.join(self.path_results, plot_name), format="pdf")
+        plt.close()
+    
+    def __save_pickle(self, file, name_file):
+        with open(os.path.join(self.path_results, name_file), "wb") as fp:
+            pickle.dump(file, fp)
 
     # def load_shap_values(self):
     #     with open(os.path.join(self.path_results, "all_shap_values"), "rb") as fp:
