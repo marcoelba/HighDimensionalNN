@@ -21,6 +21,9 @@ def read_config(path_to_config="./config.ini"):
     file_names = dict(config.items('file_names'))
     config_dict['file_names'] = file_names
 
+    # saving data elements names
+    config_dict['saving_file_names'] = dict(config.items('saving_file_names'))
+
     # -------------------- data array - names and features -------------------
     data_arrays = {}
     # array names
@@ -69,6 +72,9 @@ def read_config(path_to_config="./config.ini"):
     integers = dict(config.items('model_params_int')).keys()
     for param in integers:
         config_dict['model_params'][param] = config.getint('model_params_int', param)
+
+    # -------------------- model_definition_parameters ----------------------
+    config_dict['model_definition_parameters'] = dict(config.items('model_definition_parameters'))
 
     return config_dict
 

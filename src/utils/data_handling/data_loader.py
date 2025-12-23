@@ -104,10 +104,11 @@ class CustomData:
         print("Shape target array: ", y.shape)
 
         self.n_individuals, self.n_measurements, self.n_timepoints, _ = y.shape
+        self.n_timepoints = self.n_timepoints - 1
 
         print("\n ----------------- Dimensions: ---------------------- ")
         print("n_individuals: ", self.n_individuals)
-        print("n_timepoints: ", self.n_timepoints - 1)
+        print("n_timepoints: ", self.n_timepoints)
         print("n_measurements: ", self.n_measurements)
         print("\n ---------------------------------- ")
 

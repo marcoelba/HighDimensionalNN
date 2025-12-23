@@ -21,13 +21,13 @@ class Preprocessing:
         
         return features_to_preprocess_idx
 
-    def train(self, dict_arrays: dict):
+    def train(self, dict_train: dict):
         """
         Preprocess of longitudinal arrays
         
         Parameters
         ----------
-        dict_arrays : dict of ndarray
+        dict_train : dict of ndarray
             Training array of shape (n_samples, n_meals, n_features)
         """
         all_arrays = dict_train.keys()
@@ -39,7 +39,7 @@ class Preprocessing:
 
             if array in self.features_to_preprocess:
                 self.scalers[array] = dict()
-                features_to_preprocess_idx = self._get_features_indeces(self, array, n_features)
+                features_to_preprocess_idx = self._get_features_indeces(array, n_features)
                 
                 # make arrays flat
                 train_array_flat = train_array.reshape(-1, n_features)
@@ -81,7 +81,7 @@ class Preprocessing:
 
             if array in self.features_to_preprocess:
 
-                features_to_preprocess_idx = self._get_features_indeces(self, array, n_features)
+                features_to_preprocess_idx = self._get_features_indeces(array, n_features)
 
                 # make arrays flat
                 test_array_flat = test_array.reshape(-1, n_features)

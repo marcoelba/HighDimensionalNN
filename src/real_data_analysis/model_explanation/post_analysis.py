@@ -1,13 +1,11 @@
 # analysis of loss components
-import torch
-import torch.nn as nn
-import pandas as pd
-import numpy as np
+import pickle
+import os
 
-from src.utils.features_preprocessing import preprocess_train, preprocess_transform
 from src.utils.config_reader import get_config
-from src.utils.get_arrays import CustomData
-from src.utils import data_loading_wrappers
+from src.utils.data_handling.data_loader import CustomData
+from src.utils.ensemble_pipeline import EnsemblePipeline
+from src.utils.features_preprocessing import Preprocessing
 
 # Script specific modules
 # Must be in the same directory where model_fitting.py is run
@@ -16,10 +14,7 @@ from full_model import Model
 
 # get config from console input arguments
 config_dict = get_config()
-
 PATH_RESULTS = config_dict["script_parameters"]["results_folder"]
-DEVICE = torch.device(config_dict["training_parameters"]["device"])
-N_FOLDS = config_dict["training_parameters"]["n_folds"]
 
 # -------------------- Load data -------------------------
 data = CustomData(config_dict, data_dir=config_dict["script_parameters"]["data_folder"])

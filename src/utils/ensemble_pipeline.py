@@ -1,23 +1,26 @@
 # Ensemble models
 import pickle
 import copy
+import os
 
 import torch
 import numpy as np
+import matplotlib.pyplot as plt
 
 from src.utils.data_handling import train_data_batching
 from src.utils import training_wrapper
 
 
 class EnsemblePipeline:
-    def __init__(self, model_definition, features_preprocessing, config_dict):
+    def __init__(self, model_class, features_preprocessing, config_dict, model_dimension_definition=None):
         self.config_dict = config_dict
         self.path_results = config_dict["script_parameters"]["results_folder"]
         self.n_folds = config_dict["training_parameters"]["n_folds"]
         self.device = torch.device(config_dict["training_parameters"]["device"])
-        self.model_definition = model_definition
+        self.model_class = model_class
         self.features_preprocessing = features_preprocessing
-
+        
+        self.model_dimension_definition = model_dimension_definition
         self.all_models = []
 
         # Load scalers
@@ -29,33 +32,61 @@ class EnsemblePipeline:
         
         # model dimension parameters
         try:
-            self.model_parameters = load_model_dim_parameters()
+            self.model_dimension_definition = load_model_dim_parameters()
         except Exception as e:
-            self.model_parameters = None
-            print(f"Pickle model_parameters not loaded: {e}")
+            print(f"Pickle model_dimension_definition not loaded: {e}")
+    
+    def __trace_plot(self, trainer, plot_name):
+        fig = plt.figure()
+        plt.plot(trainer.losses["train"], label="Train")
+        plt.plot(trainer.losses["val"], label="Val")
+        plt.legend()
+        fig.savefig(os.path.join(self.path_results, plot_name), format="pdf")
+        plt.close()
+    
+    def __save_pickle(self, file, name_file):
+        with open(os.path.join(self.path_results, name_file), "wb") as fp:
+            pickle.dump(file, fp)
+
+    def __load_pickle(self, name_file):
+        with open(os.path.join(self.path_results, name_file), "rb") as fp:
+            x = pickle.load(fp)
+        return x
         
     def load_trained_models(self):
 
         for fold in range(self.n_folds):
-            path = f"{self.path_results}/model_{fold}"
-            self.model_definition.to(self.device).load_state_dict(torch.load(path))
+            path = os.path.join(self.path_results, f"model_{fold}")
+            model = self.model_class(
+                self.config_dict["model_params"],
+                self.model_dimension_definition
+            ).to(self.device)
+            model.load_state_dict(torch.load(path))
             self.all_models.append(model)
         print(f"Fold models loaded")
         self.torch_models = torch.nn.ModuleList(self.all_models)
 
     def load_scalers(self):
-        with open(os.path.join(self.path_results, "all_scalers"), "rb") as fp:
-            x = pickle.load(fp)
+        x = self.__load_pickle(
+            os.path.join(self.path_results, self.config_dict["saving_file_names"]["pickle_all_scalers"])
+        )
         return x
 
     def load_model_dim_parameters(self):
-        with open(
-            os.path.join(self.path_results, config_dict["file_names"]["pickle_model_dimension_definition"]),
-            "rb") as fp:
-            x = pickle.load(fp)
+        x = self.__load_pickle(
+            os.path.join(self.path_results, self.config_dict["file_names"]["pickle_model_dimension_definition"])
+        )
         return x
     
-    def train(self, dict_arrays, n_individuals):
+    def train(self, dict_arrays):
+        # save current model init definition
+        if self.config_dict["training_parameters"]["save_models"]:
+            self.__save_pickle(
+                self.model_dimension_definition,
+                self.config_dict["saving_file_names"]["pickle_model_dimension_definition"]
+            )
+        
+        n_individuals = dict_arrays["y_target"].shape[0]
         train_indices = np.random.permutation(np.arange(0, n_individuals))
         # Split into k folds
         folds = np.array_split(train_indices, self.n_folds)
@@ -89,8 +120,8 @@ class EnsemblePipeline:
                 dict_val_preproc["y_baseline"] = dict_val_preproc["y_baseline"][..., 0]
 
             # get tensors
-            tensor_data_train = [torch.FloatTensor(array).to(DEVICE) for key, array in dict_train_preproc.items()]
-            tensor_data_val = [torch.FloatTensor(array).to(DEVICE) for key, array in dict_val_preproc.items()]
+            tensor_data_train = [torch.FloatTensor(array).to(self.device) for key, array in dict_train_preproc.items()]
+            tensor_data_val = [torch.FloatTensor(array).to(self.device) for key, array in dict_val_preproc.items()]
 
             # Validation batch size - just do one
             y_val_shape = dict_val_preproc["y_target"].shape
@@ -101,7 +132,7 @@ class EnsemblePipeline:
             # data loaders
             train_dataloader = train_data_batching.make_data_loader(
                 *tensor_data_train,
-                batch_size=config_dict["training_parameters"]["batch_size"],
+                batch_size=self.config_dict["training_parameters"]["batch_size"],
                 feature_dimensions=-1,
                 reshape=True,
                 drop_missing=True
@@ -116,7 +147,10 @@ class EnsemblePipeline:
             )
 
             # ---------------------- Model Setup ----------------------
-            model = copy.deepcopy(self.model_definition)
+            model = self.model_class(
+                self.config_dict["model_params"],
+                self.model_dimension_definition
+            ).to(self.device)
             optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
             # Training Loop
@@ -124,7 +158,7 @@ class EnsemblePipeline:
             trainer.training_loop(
                 model,
                 optimizer,
-                config_dict["training_parameters"]["num_epochs"],
+                self.config_dict["training_parameters"]["num_epochs"],
                 gradient_noise_std=0.0
             )
 
@@ -132,7 +166,7 @@ class EnsemblePipeline:
             model.load_state_dict(trainer.best_model.state_dict())
 
             # save model?
-            if config_dict["training_parameters"]["save_models"]:
+            if self.config_dict["training_parameters"]["save_models"]:
                 path = os.path.join(self.path_results, f"model_{fold}")
                 torch.save(model.state_dict(), path)
 
@@ -149,25 +183,15 @@ class EnsemblePipeline:
             self.all_val_losses.append(np.min(trainer.losses["val"]))
 
             # if saving loss traces
-            plot_name = f"train_val_loss_fold_{fold}.pdf"
-            self.__trace_plot(trainer, plot_name)
+            if self.config_dict["training_parameters"]["save_models"]:
+                plot_name = f"train_val_loss_fold_{fold}.pdf"
+                self.__trace_plot(trainer, plot_name)
         
         # saving training results
-        self.__save_pickle(self, self.all_scalers, config_dict["saving_file_names"]["pickle_all_scalers"])
-        self.__save_pickle(self, self.all_train_losses, config_dict["saving_file_names"]["pickle_all_train_losses"])
-        self.__save_pickle(self, self.all_val_losses, config_dict["saving_file_names"]["pickle_all_val_losses"])
-
-    def __trace_plot(self, trainer, plot_name):
-        fig = plt.figure()
-        plt.plot(trainer.losses["train"], label="Train")
-        plt.plot(trainer.losses["val"], label="Val")
-        plt.legend()
-        fig.savefig(os.path.join(self.path_results, plot_name), format="pdf")
-        plt.close()
-    
-    def __save_pickle(self, file, name_file):
-        with open(os.path.join(self.path_results, name_file), "wb") as fp:
-            pickle.dump(file, fp)
+        if self.config_dict["training_parameters"]["save_models"]:
+            self.__save_pickle(self.all_scalers, self.config_dict["saving_file_names"]["pickle_all_scalers"])
+            self.__save_pickle(self.all_train_losses, self.config_dict["saving_file_names"]["pickle_all_train_losses"])
+            self.__save_pickle(self.all_val_losses, self.config_dict["saving_file_names"]["pickle_all_val_losses"])
 
     # def load_shap_values(self):
     #     with open(os.path.join(self.path_results, "all_shap_values"), "rb") as fp:
