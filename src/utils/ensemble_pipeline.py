@@ -181,10 +181,10 @@ class EnsemblePipeline:
                 ground_truth_val_folds.append(val_dataloader.dataset.arrays[-1].numpy())
                 print(f"RMSE fold {fold}: {np.sqrt(np.mean((pred[-1].numpy() - val_dataloader.dataset.arrays[-1].numpy())**2))}")
 
-            print(f"train loss: {np.min(trainer.losses["train"])}")
-            print(f"val loss: {np.min(trainer.losses["val"])}")
-            all_train_losses.append(np.min(trainer.losses["train"]))
-            all_val_losses.append(np.min(trainer.losses["val"]))
+            print(f"train loss: {np.min(trainer.losses['train'])}")
+            print(f"val loss: {np.min(trainer.losses['val'])}")
+            all_train_losses.append(np.min(trainer.losses['train']))
+            all_val_losses.append(np.min(trainer.losses['val']))
 
             # if saving loss traces
             if self.config_dict["training_parameters"]["save_models"]:
