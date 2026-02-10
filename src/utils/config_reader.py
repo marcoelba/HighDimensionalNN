@@ -1,5 +1,7 @@
 import configparser
 import re
+from pathlib import Path
+import argparse
 
 
 def read_config(path_to_config="./config.ini"):
@@ -18,6 +20,9 @@ def read_config(path_to_config="./config.ini"):
     # data files
     file_names = dict(config.items('file_names'))
     config_dict['file_names'] = file_names
+
+    # saving data elements names
+    config_dict['saving_file_names'] = dict(config.items('saving_file_names'))
 
     # -------------------- data array - names and features -------------------
     data_arrays = {}
@@ -67,6 +72,28 @@ def read_config(path_to_config="./config.ini"):
     integers = dict(config.items('model_params_int')).keys()
     for param in integers:
         config_dict['model_params'][param] = config.getint('model_params_int', param)
+
+    # -------------------- model_definition_parameters ----------------------
+    config_dict['model_definition_parameters'] = dict(config.items('model_definition_parameters'))
+
+    return config_dict
+
+
+def get_config(config_path=None):
+
+    if config_path is None:
+        # read input arguments from console
+        parser = argparse.ArgumentParser(description='Run program with custom config and modules')
+        parser.add_argument('-c', '--config', required=True, help='Path to config.ini file')
+        args = parser.parse_args()
+
+        # Load config file
+        config_path = Path(args.config)
+        if not config_path.exists():
+            print(f"Error: Config file not found: {config_path}")
+            sys.exit(1)
+    
+    config_dict = read_config(config_path)
 
     return config_dict
 

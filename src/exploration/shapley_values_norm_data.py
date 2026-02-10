@@ -92,6 +92,7 @@ dataloader = data_loading_wrappers.make_data_loader(*data_tensor, batch_size=50)
 device = torch.device("cpu")
 model_nn = LinearModel(p).to(device)
 optimizer = optim.Adam(model_nn.parameters(), lr=1e-3)
+optimizer = optim.SGD(model_nn.parameters(), lr=1e-4)
 
 # Training Loop
 num_epochs = 5000
@@ -130,7 +131,17 @@ shap.summary_plot(
 shap_values_std = shap_values.std(axis=0)
 shap_values_std
 
-row_id = 0
+# check single predictions
+base_value
+model_shap(*[data_tensor[0].mean(axis=0), data_tensor[0].mean(axis=0)])
+model_nn([data_tensor[0].mean(axis=0), data_tensor[1].mean()])
+
+row_id = 1
+base_value + sum(shap_values[row_id, :])
+data_tensor[1].mean() + sum(shap_values[row_id, :])
+
+model_shap(*data_tensor)[row_id]
+
 explanation = shap.Explanation(
     values=shap_values[row_id, :],
     base_values=base_value,
@@ -202,3 +213,36 @@ np.abs(shap_values)[:, 0].mean()
 col = 2
 shap_values[shap_values[:, col] > 0, col].mean()
 shap_values[shap_values[:, col] < 0, col].mean()
+
+
+####
+T = 4
+n = 5
+
+x1 = [1, 1.5, 1.4, 1.1]
+x2 = [1, 1.7, 1.6, 1.5]
+x3 = [0.9, 1.1, 1.1, 0.9]
+x4 = [0.9, 1.5, 1.0, 0.8]
+x5 = [1.5, 2.0, 2.0, 1.7]
+x6 = [1.5, 2.0, 2.2, 2.1]
+x7 = [1., 1.6, 1.1, 1.2]
+
+X = np.stack([
+    x1, x2, x3, x4, x5, x6, x7
+], axis=0)
+X.shape
+
+plt.plot(X.transpose())
+plt.show()
+
+baseline = X[:, 0:1]
+X_net = (X - baseline)
+sum_net = (X - baseline).sum(axis=1)
+
+plt.plot(X_net.transpose(), label=np.round(np.abs(sum_net), 3))
+plt.legend()
+plt.show()
+
+plt.plot(X.transpose(), label=np.round(np.abs(sum_net), 3))
+plt.legend()
+plt.show()

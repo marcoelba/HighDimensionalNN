@@ -9,7 +9,8 @@ def convert_to_static_multidim_array(
     visit_col: str,
     meal_col: str,
     time_index_col: str,
-    cols_to_extract: list
+    cols_to_extract: list,
+    verbose: bool = False
 ):
     """
     Convert a longitudinal DataFrame to multi-dimensional arrays for analysis.
@@ -30,7 +31,7 @@ def convert_to_static_multidim_array(
         Column name for time points
     cols_to_extract : list
         List of column names for covariates/features
-        
+    
     Returns
     -------
     X : ndarray
@@ -63,12 +64,13 @@ def convert_to_static_multidim_array(
             for cov_idx, cov in enumerate(cols_to_extract):
                 result_array[idx, meal_to_idx[meal], cov_idx] = row[cov]
 
-    print("Original DataFrame:")
-    print(df.head())
-    print(f"\nResult array shape: {result_array.shape}")
-    print("Result array:")
-    print(result_array[0])
-    print(result_array[1])
+    if verbose:
+        print("Original DataFrame:")
+        print(df.head())
+        print(f"\nResult array shape: {result_array.shape}")
+        print("Result array:")
+        print(result_array[0])
+        print(result_array[1])
 
     return result_array
 
@@ -80,7 +82,8 @@ def convert_to_longitudinal_multidim_array(
     meal_col: str,
     time_index_col: str,
     cols_to_extract: list,
-    transform: list=None
+    transform: list=None,
+    verbose: bool = False
 ):
     """
     Convert a longitudinal DataFrame to multi-dimensional arrays for analysis,
@@ -143,10 +146,11 @@ def convert_to_longitudinal_multidim_array(
             else:
                 result_array[id_idx, meal_idx, time_idx, cov_idx] = row[cov]
 
-    print("Original DataFrame:")
-    print(df.head())
-    print(f"\nResult array shape: {result_array.shape}")
-    print(f"Dimensions: {n_subjects} subjects × {n_meals} meals × {n_timepoints} timepoints × {n_features} features")
+    if verbose:
+        print("Original DataFrame:")
+        print(df.head())
+        print(f"\nResult array shape: {result_array.shape}")
+        print(f"Dimensions: {n_subjects} subjects × {n_meals} meals × {n_timepoints} timepoints × {n_features} features")
     
     # if len(cols_to_extract) == 1:
     #     result_array = result_array[..., 0]

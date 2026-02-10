@@ -63,7 +63,6 @@ with open(os.path.join(PATH_RESULTS, "all_scalers"), "rb") as fp:   # Pickling s
 with open(os.path.join(PATH_RESULTS, "all_shap_values"), "rb") as fp:
     all_shap_values = pickle.load(fp)
 print("Shap length: ", len(all_shap_values))
-all_shap_values[0][0].shape
 
 # pre-process the input data with all folds scalers at once
 dict_shap = {key: array for key, array in dict_arrays.items() if key in config_dict["data_arrays"].keys()}
@@ -73,17 +72,74 @@ features_combined, features_label_per_folds = prepare_data_for_shap(
     config_dict
 )
 
+
+# Collapse shapley values to one single time
+len(all_shap_values[0])
+n_patients = all_shap_values[0][0].shape[0]
+
+feature_shap_values = [all_shap_values[t][0] for t in range(n_timepoints)]
+
+concat_shap_values = np.concatenate(feature_shap_values, axis=-1)
+concat_shap_values.shape
+
+mean_abs_shap_values = np.mean(np.abs(concat_shap_values), axis=-1)
+mean_abs_shap_values.shape
+mean_shap_values = np.mean(concat_shap_values, axis=-1)
+sum_shap_values = np.sum(concat_shap_values, axis=-1)
+
 # genes shap
-for time_point in range(n_timepoints):
-    genes_shap = all_shap_values[time_point][0][..., -1]
-    fig = plt.figure()
-    shap.summary_plot(
-        genes_shap,
-        features=features_combined[0],
-        feature_names=genes_names,
-        show=False
-    )
-    fig.savefig(f"{PATH_PLOTS}/genes_shap_time_{time_point}.pdf", format="pdf")
+explanation = shap.Explanation(
+    values=mean_abs_shap_values,
+    data=features_combined[0],
+    feature_names=genes_names
+)
+shap.plots.bar(explanation[0], max_display=25)
+
+explanation = shap.Explanation(
+    values=sum_shap_values,
+    data=features_combined[0],
+    feature_names=genes_names
+)
+shap.plots.bar(explanation, max_display=25)
+shap.plots.beeswarm(explanation, max_display=25)
+shap.plots.bar(explanation[0], max_display=25)
+
+# long
+long_shap_values = np.concatenate(feature_shap_values, axis=0)
+long_shap_values.shape
+long_features_combined = np.concatenate([features_combined[0] for t in range(n_timepoints)], axis=0)
+
+explanation = shap.Explanation(
+    values=long_shap_values[..., -1],
+    data=long_features_combined,
+    feature_names=genes_names
+)
+shap.plots.bar(explanation, max_display=25)
+shap.plots.beeswarm(explanation, max_display=25)
+shap.plots.bar(explanation[0], max_display=25)
+
+time_groups = np.concatenate(
+    [np.repeat(f"time_{tt}", n_patients) for tt in range(n_timepoints)],
+    axis=0
+)
+shap.plots.bar(explanation.cohorts(time_groups))
+
+explanation = shap.Explanation(
+    values=long_shap_values[..., -1],
+    data=long_features_combined,
+    feature_names=genes_names
+)
+shap.plots.bar(explanation[[0, 1]].cohorts(["1", "2"]))
+
+
+fig = plt.figure()
+shap.summary_plot(
+    genes_shap,
+    features=features_combined[0],
+    feature_names=genes_names,
+    show=False
+)
+fig.savefig(f"{PATH_PLOTS}/genes_shap_time_{time_point}.pdf", format="pdf")
 
 # metab shap
 for time_point in range(n_timepoints):

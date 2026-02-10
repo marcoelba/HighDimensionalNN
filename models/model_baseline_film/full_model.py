@@ -27,37 +27,31 @@ class Model(nn.Module):
     - Transformer
 
     Args:
-        input_dim_genes: int,
-        input_dim_metab: int,
-        input_patient_features_dim: int,
-        n_timepoints: int,
+        input_model_dimensions: dict,
         model_config: dict
     """
     def __init__(
         self,
-        input_dim_genes: int,
-        input_dim_metab: int,
-        input_patient_features_dim: int,
-        n_timepoints: int,
-        model_config: dict
+        model_config: dict,
+        input_model_dimensions: dict
     ):
         super(Model, self).__init__()
 
-        self.input_dim_genes = input_dim_genes
-        self.input_dim_metab = input_dim_metab
-        self.input_patient_features_dim = input_patient_features_dim + 1
-        self.n_timepoints = n_timepoints
+        self.input_dim_genes = input_model_dimensions["input_dim_genes"]
+        self.input_dim_metab = input_model_dimensions["input_dim_metab"]
+        self.input_patient_features_dim = input_model_dimensions["input_patient_features_dim"] + 1
+        self.n_timepoints = input_model_dimensions["n_timepoints"]
         self.model_config = model_config
         
         # variables updated at each iteration of the training
         self.batch_size = 0
 
         # Generate causal mask
-        self.causal_mask = self.generate_causal_mask(n_timepoints)
+        self.causal_mask = self.generate_causal_mask(self.n_timepoints)
 
         # ------------- FFN genomics -------------
         self.ffn_genes = nn.Sequential(
-            nn.Linear(input_dim_genes, model_config["vae_genomics_input_to_latent_dim"]),
+            nn.Linear(self.input_dim_genes, model_config["vae_genomics_input_to_latent_dim"]),
             nn.GELU(),
             nn.Dropout(model_config["dropout"]),
             nn.Linear(model_config["vae_genomics_input_to_latent_dim"], model_config["vae_genomics_latent_dim"])
@@ -65,7 +59,7 @@ class Model(nn.Module):
 
         # ------------- FFN metabolomics -------------
         self.ffn_metab = nn.Sequential(
-            nn.Linear(input_dim_metab, model_config["vae_metabolomics_input_to_latent_dim"]),
+            nn.Linear(self.input_dim_metab, model_config["vae_metabolomics_input_to_latent_dim"]),
             nn.GELU(),
             nn.Dropout(model_config["dropout"]),
             nn.Linear(model_config["vae_metabolomics_input_to_latent_dim"], model_config["vae_metabolomics_latent_dim"])
