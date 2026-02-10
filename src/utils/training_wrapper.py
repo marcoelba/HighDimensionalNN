@@ -1,15 +1,14 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
 import copy
 
 
 class Training:
-    def __init__(self, train_dataloader, val_dataloader=None, noisy_gradient=False):
+    def __init__(self, train_dataloader, val_dataloader=None, noisy_gradient=False, verbose=False):
 
         self.noisy_gradient = noisy_gradient
-
+        self.verbose = verbose
         self.losses = dict()
         
         self.validation = (val_dataloader is not None)
@@ -73,8 +72,9 @@ class Training:
             self.losses["train"].append(train_loss / self.len_train)
             self.losses["train_pred"].append(train_pred_loss / self.len_train)
 
-            if (epoch % 10) == 0:
-                print(f'Epoch {epoch+1}, Loss: {train_loss / self.len_train:.4f}')
+            if self.verbose:
+                if (epoch % 10) == 0:
+                    print(f'Epoch {epoch+1}, Loss: {train_loss / self.len_train:.4f}')
             
             if self.validation:
                 model.eval()
@@ -92,8 +92,10 @@ class Training:
 
                 self.losses["val"].append(val_loss / self.len_val)
                 self.losses["val_pred"].append(val_pred_loss / self.len_val)
-                if (epoch % 10) == 0:
-                    print(f'Epoch {epoch+1}, Validation Loss: {val_loss / self.len_val:.4f}')
+
+                if self.verbose:
+                    if (epoch % 10) == 0:
+                        print(f'Epoch {epoch+1}, Validation Loss: {val_loss / self.len_val:.4f}')
             
                 # save best model
                 if val_loss < self.best_val_loss:

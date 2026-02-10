@@ -1,11 +1,16 @@
 import copy
 import torch
 
-from src.utils.features_preprocessing import preprocess_transform
-from src.utils import data_loading_wrappers
+from src.utils.data_handling.train_data_batching import CustomDataset
 
 
-def prepare_data_for_shap(dict_feature_arrays, all_scalers, config_dict, patient_index=None, verbose=False):
+def prepare_data_for_shap(
+    dict_feature_arrays,
+    all_scalers,
+    config_dict,
+    patient_index=None,
+    verbose=False
+    ):
 
     DEVICE = torch.device(config_dict["training_parameters"]["device"])
     FEATURES_KEYS = list(config_dict["preprocess"].keys())[:-1]
@@ -15,8 +20,8 @@ def prepare_data_for_shap(dict_feature_arrays, all_scalers, config_dict, patient
 
     for fold in range(N_FOLDS):
         # apply feature preprocessing
-        dict_arrays_preproc = preprocess_transform(
-            copy.deepcopy(dict_feature_arrays), all_scalers[fold], config_dict, verbose=verbose
+        dict_arrays_preproc = all_scalers[fold].transform(
+            copy.deepcopy(dict_feature_arrays)
         )
         if dict_arrays_preproc["y_baseline"].shape[-1] == 1:
             dict_arrays_preproc["y_baseline"] = dict_arrays_preproc["y_baseline"][..., 0]
@@ -32,7 +37,7 @@ def prepare_data_for_shap(dict_feature_arrays, all_scalers, config_dict, patient
             ]
         
         # make longitudinal
-        tensor_dataset = data_loading_wrappers.CustomDataset(
+        tensor_dataset = CustomDataset(
             *tensor_data,
             reshape=True,
             remove_missing=True,

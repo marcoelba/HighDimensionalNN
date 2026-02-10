@@ -11,6 +11,8 @@ cp src/real_data_analysis/model_explanation/model_fitting.py ./
 
 # Run python file
 "$PYTHON_INTERPRETER" model_fitting.py -c config.ini
+PYTHON_EXIT=$?
 
 # remove when done
 rm ./model_fitting.py
+exit $PYTHON_EXIT

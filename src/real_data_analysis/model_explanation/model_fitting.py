@@ -20,9 +20,6 @@ os.makedirs(config_dict["script_parameters"]["results_folder"], exist_ok = True)
 data = CustomData(config_dict, data_dir=config_dict["script_parameters"]["data_folder"])
 dict_arrays = data.load_and_process_data(data_dir=config_dict["script_parameters"]["data_folder"])
 
-# preprocessing class
-features_preprocessing = Preprocessing(config_dict=config_dict)
-
 # model definition
 model_dimension_definition = dict(
     input_dim_genes=data.p_gene,
@@ -33,7 +30,7 @@ model_dimension_definition = dict(
 
 model_pipeline = EnsemblePipeline(
     Model,
-    features_preprocessing,
+    Preprocessing,
     config_dict,
     model_dimension_definition
 )

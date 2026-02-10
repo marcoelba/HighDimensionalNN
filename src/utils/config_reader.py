@@ -79,18 +79,20 @@ def read_config(path_to_config="./config.ini"):
     return config_dict
 
 
-def get_config():
+def get_config(config_path=None):
 
-    # read input arguments from console
-    parser = argparse.ArgumentParser(description='Run program with custom config and modules')
-    parser.add_argument('-c', '--config', required=True, help='Path to config.ini file')
-    args = parser.parse_args()
+    if config_path is None:
+        # read input arguments from console
+        parser = argparse.ArgumentParser(description='Run program with custom config and modules')
+        parser.add_argument('-c', '--config', required=True, help='Path to config.ini file')
+        args = parser.parse_args()
 
-    # Load config file
-    config_path = Path(args.config)
-    if not config_path.exists():
-        print(f"Error: Config file not found: {config_path}")
-        sys.exit(1)
+        # Load config file
+        config_path = Path(args.config)
+        if not config_path.exists():
+            print(f"Error: Config file not found: {config_path}")
+            sys.exit(1)
+    
     config_dict = read_config(config_path)
 
     return config_dict

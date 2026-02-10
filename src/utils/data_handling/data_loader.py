@@ -21,6 +21,8 @@ class CustomData:
         self.n_measurements = None
         self.n_timepoints = None
 
+        self.meal_idx_mapping = None
+
     def load_and_process_data(self, data_dir: str):
 
         column_names = self.config_dict["shared_columns"]
@@ -35,7 +37,6 @@ class CustomData:
         
         print("\n-------------------------------")
         print(" Extraction of gene data")
-        print(" ------------------------------- ")
 
         X_gene = convert_to_static_multidim_array(
             df_features,
@@ -70,7 +71,6 @@ class CustomData:
         self.p_metab = X_metab.shape[-1]
 
         # extract static patient features
-        print("\n-------------------------------")
         print(" Extraction of patient data")
         print("-------------------------------")
 
@@ -87,9 +87,10 @@ class CustomData:
         print("Shape patient features array: ", X_static.shape)
         self.p_static = X_static.shape[-1]
 
+        _ = self.get_meal_mapping(df_features, column_names["col_meal"])
+
         print("\n-------------------------------")
         print(" Extraction of outcome")
-        print("-------------------------------")
 
         y = convert_to_longitudinal_multidim_array(
             df_clinical_data,
@@ -134,6 +135,15 @@ class CustomData:
         print("\n Total not NAs: ", where_all.sum())
         
         return where_all
+    
+    def get_meal_mapping(self, df, meal_col):
+        unique_meals = sorted(df[meal_col].dropna().unique())
+        # unique meal to number mapping
+        meal_to_idx = {meal: idx for idx, meal in enumerate(unique_meals)}
+        self.meal_idx_mapping = meal_to_idx
+        
+        return meal_to_idx
+
 
 def sum_not_nan(x):
     x_shape = x.shape

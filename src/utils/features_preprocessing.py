@@ -2,16 +2,20 @@
 import numpy as np
 import copy
 
+import torch
 from sklearn.preprocessing import StandardScaler
 
 
 class Preprocessing:
-    def __init__(self, config_dict: dict):
+    def __init__(self, config_dict: dict, scalers: dict=None):
         self.config_dict = config_dict
         self.features_to_preprocess = config_dict["preprocess"]
         self.data_arrays = config_dict["data_arrays"]
-
-        self.scalers = dict()
+        
+        if scalers is None:
+            self.scalers = dict()
+        else:
+            self.scalers = scalers
     
     def _get_features_indeces(self, array_name, n_features):
         if self.features_to_preprocess[array_name] == 'all':
@@ -57,7 +61,7 @@ class Preprocessing:
                         scaler = StandardScaler()
                         scaler.fit(train_feature_no_nan.reshape(-1, 1))
                         self.scalers[array][idx] = scaler
-        
+    
     def transform(self, dict_arrays: dict, verbose=False):
         """
         Preprocess new longitudinal data using the already trained scalers
@@ -82,9 +86,9 @@ class Preprocessing:
             if array in self.features_to_preprocess:
 
                 features_to_preprocess_idx = self._get_features_indeces(array, n_features)
-
+                
                 # make arrays flat
-                test_array_flat = test_array.reshape(-1, n_features)
+                test_array_flat = copy.deepcopy(test_array).reshape(-1, n_features)
 
                 if verbose:
                     print(f"NAs in feature: {np.isnan(test_array_flat).sum()}")
@@ -93,7 +97,7 @@ class Preprocessing:
                 for idx in features_to_preprocess_idx:
 
                     # Extract the feature column
-                    feature = copy.deepcopy(test_array_flat[:, idx])
+                    feature = test_array_flat[:, idx]
                     # Remove NaN values for fitting
                     feature_no_nan = feature[~np.isnan(feature)]
                     
@@ -113,3 +117,76 @@ class Preprocessing:
                 dict_arrays_preproc[array] = test_array
         
         return dict_arrays_preproc
+
+    def inverse_transform(self, dict_arrays: dict, verbose=False):
+        """
+        Inverse-Preprocess longitudinal data using the already trained scalers
+        
+        Parameters
+        ----------
+        dict_arrays : dict of ndarray
+            Training array of shape (n_samples, n_meals, n_features)
+        """
+
+        all_arrays = dict_arrays.keys()
+        dict_arrays_preproc = dict()
+
+        for array in all_arrays:
+
+            if verbose:
+                print(f"\n ------------ Processing feature {array} ------------")
+            
+            test_array = dict_arrays[array]
+            n_features = test_array.shape[-1]
+
+            if array in self.features_to_preprocess:
+
+                features_to_preprocess_idx = self._get_features_indeces(array, n_features)
+
+                # make arrays flat
+                test_array_flat = copy.deepcopy(test_array).reshape(-1, n_features)
+
+                if verbose:
+                    print(f"NAs in feature: {np.isnan(test_array_flat).sum()}")
+
+                # Process features
+                for idx in features_to_preprocess_idx:
+
+                    # Extract the feature column
+                    feature = test_array_flat[:, idx]
+                    # Remove NaN values for fitting
+                    feature_no_nan = feature[~np.isnan(feature)]
+                    
+                    if len(feature_no_nan) > 0:
+                        # Transform validation
+                        test_array_flat[~np.isnan(feature), idx] = self.scalers[array][idx].inverse_transform(
+                            feature_no_nan.reshape(-1, 1)
+                        ).flatten()
+                
+                # Reshape back to original shape
+                test_processed = test_array_flat.reshape(test_array.shape)
+                dict_arrays_preproc[array] = test_processed
+                if verbose:
+                    print(f"NAs in feature AFTER processing: {np.isnan(test_array_flat).sum()}")
+
+            else:
+                dict_arrays_preproc[array] = test_array
+        
+        return dict_arrays_preproc
+
+class TorchScaler:
+    def __init__(self, scaler, dtype=torch.float32):
+        self.mean = torch.tensor(scaler.mean_, dtype=dtype)
+        self.scale = torch.tensor(scaler.scale_, dtype=dtype)
+
+    def transform(self, x):
+        """
+            x: torch.Tensor
+        """
+        return (x - self.mean) / self.scale
+
+    def inverse_transform(self, x):
+        """
+            x: torch.Tensor
+        """
+        return x * self.scale + self.mean

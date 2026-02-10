@@ -89,7 +89,7 @@ def sum_nan_on_given_dims(x, feature_dimensions):
 
 
 class CustomDataset(Dataset):
-    def __init__(self, *arrays, reshape=False, remove_missing=True, feature_dimensions=-1, device=torch.device("cpu")):
+    def __init__(self, *arrays, reshape=False, remove_missing=True, feature_dimensions=-1, device=torch.device("cpu"), verbose=False):
         """
         Args:
         """
@@ -118,8 +118,9 @@ class CustomDataset(Dataset):
         self.new_shapes = [arr.shape for arr in arrays]
         self.arrays = arrays
 
-        print("Input Tensors Shapes: ", self.original_shapes)
-        print("New Tensors Shapes: ", self.new_shapes)
+        if verbose:
+            print("Input Tensors Shapes: ", self.original_shapes)
+            print("New Tensors Shapes: ", self.new_shapes)
 
     def __len__(self):
         return len(self.arrays[0])
