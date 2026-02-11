@@ -69,7 +69,7 @@ all_features = np.concatenate([
     np.nanmean(dict_arrays["genes"], axis=1),
     np.nanmean(dict_arrays["metabolites"], axis=1),
     np.nanmean(dict_arrays["static_patient_features"], axis=1),
-    np.nanmean(dict_arrays["y_baseline"], axis=1)[..., -1]
+    np.nanmean(np.exp(dict_arrays["y_baseline"]), axis=1)[..., -1]
     ], axis=-1
 )
 

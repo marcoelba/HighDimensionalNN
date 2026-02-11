@@ -9,7 +9,7 @@ from src.utils.data_handling.data_loader import CustomData
 from src.utils.ensemble_pipeline import EnsemblePipeline
 from src.utils.features_preprocessing import Preprocessing
 from src.utils.shap.prepare_data_for_shap import prepare_data_for_shap
-from src.utils.shap.shap_ensemble_pipeline import ShapEnsembleModelSingleTime, ShapEnsembleModel
+from src.utils.shap.shap_ensemble_pipeline import ShapEnsembleModel
 from src.utils.files_io_helpers import save_pickle
 
 # Script specific modules
@@ -46,7 +46,7 @@ preprocessed_features_flat_per_fold, preprocessed_features_per_fold, predictions
 # save predictions for the base data
 save_pickle(
     predictions_per_fold,
-    os.path.join(path_results, f"{config_dict["saving_file_names"]["pickle_predictions_base_shapley"]}")
+    os.path.join(path_results, config_dict['saving_file_names']['pickle_predictions_base_shapley'])
 )
 
 # Run SHAP explanation
@@ -64,9 +64,9 @@ for fold in range(n_folds):
         # Reshape
         shap_values_reshaped = []
         for jj, shap_feature_flat in enumerate(shap_values):
-            shap_model.tensor_not_na_indexes[jj]
+            shap_model.tensor_not_na_indexes_flat[jj]
             shap_feature = np.zeros(shap_model.features_flat_shape[jj]) * np.nan
-            shap_feature[shap_model.tensor_not_na_indexes[jj]] = shap_feature_flat[..., -1]
+            shap_feature[shap_model.tensor_not_na_indexes_flat[jj]] = shap_feature_flat[..., -1]
             shap_values_reshaped.append(shap_feature.reshape(shap_model.features_shape[jj]))
         fold_shap_values.append(shap_values_reshaped)
     # stack time points as additional last dimension for each feature array
@@ -82,11 +82,11 @@ for jj in range(len(shap_values)):
 # save shap values to pickle
 save_pickle(
     all_shap_values,
-    os.path.join(path_results, f"{config_dict["saving_file_names"]["pickle_shapley_values"]}")
+    os.path.join(path_results, config_dict['saving_file_names']['pickle_shapley_values'])
 )
 save_pickle(
     shapley_values_per_feature,
-    os.path.join(path_results, f"{config_dict["saving_file_names"]["pickle_shapley_values_arrays"]}")
+    os.path.join(path_results, config_dict['saving_file_names']['pickle_shapley_values_arrays'])
 )
 
 print("---------------------- END --------------------------")

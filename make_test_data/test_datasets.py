@@ -75,9 +75,13 @@ columns_int = [col for col in columns if col != "Meal"]
 
 df_main[columns_int] = df_main[columns_int].apply(pd.to_numeric)
 
-df_group = df_main.groupby(by=["ID", "Visit"], as_index=False).agg(list)
+# add some NAs to metabolites
+df_main.loc[df_main["ID"].isin(ids_1_meal[1:3]), metab_names] = np.nan
 
-ids_bad
+df_group = df_main.groupby(by=["ID", "Visit"], as_index=False).agg(list)
+df_group.iloc[ids_bad]
+
+
 plt.plot(df_group.loc[(df_group["ID"] == 1) & (df_group["Visit"] == 1), "TG"].to_list()[0])
 plt.plot(df_group.loc[(df_group["ID"] == 30) & (df_group["Visit"] == 1), "TG"].to_list()[0])
 plt.plot(df_group.loc[(df_group["ID"] == 30) & (df_group["Visit"] == 2), "TG"].to_list()[0])

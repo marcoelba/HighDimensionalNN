@@ -7,36 +7,6 @@ import numpy as np
 from src.utils.features_preprocessing import TorchScaler
 
 
-class ShapEnsembleModelSingleTime(torch.nn.Module):
-    def __init__(self, torch_ensemble_model, config_dict, all_scalers=None):
-        super(ShapEnsembleModelSingleTime, self).__init__()
-        self.n_folds = config_dict["training_parameters"]["n_folds"]
-        self.config_dict = config_dict
-        self.torch_ensemble_model = torch_ensemble_model
-
-        if all_scalers is not None:
-            self.torch_scalers_outcome = [TorchScaler(all_scalers[fold].scalers["y_target"][0]) for fold in range(self.n_folds)]
-        else:
-            self.torch_scalers_outcome = None
-        
-        self.time_to_explain = None
-    
-    def forward(self, *x):
-        x_list = list(x)
-        all_outputs = []
-        for fold, model in enumerate(self.torch_ensemble_model):
-            model.eval()
-            output = model(x_list)[2][:, [self.time_to_explain]]
-            # transform output back to original scale
-            if self.torch_scalers_outcome is not None:
-                output = self.torch_scalers_outcome[fold].inverse_transform(output)
-                output = torch.exp(output)
-            all_outputs.append(output)
-            # return mean over folds
-        return torch.stack(all_outputs).mean(dim=0)
-
-
-
 class ShapEnsembleModel(torch.nn.Module):
     def __init__(self, model_pipeline, config_dict):
         super(ShapEnsembleModel, self).__init__()
@@ -79,33 +49,43 @@ class ShapEnsembleModel(torch.nn.Module):
                 dict_preproc["y_baseline"] = dict_preproc["y_baseline"][..., 0]
             # get tensors
             tensor_data = [torch.FloatTensor(array).to(self.device) for key, array in dict_preproc.items()]
-            preprocessed_features_per_fold.append(tensor_data[::-1])
+            preprocessed_features_per_fold.append(tensor_data[:-1])
             # need to flatten over all dimensions, except batch (first) and time (last)
             tensor_data_flat = []
-            self.tensor_not_na_indexes = []
+            tensor_not_na_flat_indexes = []
+            tensor_not_na_indexes = []
             self.features_flat_shape = []
             self.features_flat_shape_no_na = []
             self.features_shape = []
             for feature in tensor_data[:-1]:
                 feature_shape = feature.shape
                 self.features_shape.append(feature_shape)
-                # featurecopy.deepcopy(feature)
                 # NAs
                 where_not_na = sum_not_nan(feature) > 0
+                tensor_not_na_indexes.append(where_not_na)
                 where_not_na_flat = where_not_na.reshape(-1)
-                self.tensor_not_na_indexes.append(where_not_na_flat)
+                tensor_not_na_flat_indexes.append(where_not_na_flat)
+            # check all NAs patterns and keep only those that match
+            n_features = len(tensor_not_na_flat_indexes)
+            tensor_not_na_all = torch.stack(tensor_not_na_flat_indexes).sum(axis=0) == n_features
+            self.tensor_not_na_indexes_flat = []
+            for feature in tensor_data[:-1]:
+                feature_shape = feature.shape
+                self.tensor_not_na_indexes_flat.append(tensor_not_na_all)
                 # flattening
                 feature_flat = feature.reshape(-1, feature_shape[-1])
                 self.features_flat_shape.append(feature_flat.shape)
-                feature_flat_not_na = feature_flat[where_not_na_flat]
+                feature_flat_not_na = feature_flat[tensor_not_na_all]
                 self.features_flat_shape_no_na.append(feature_flat_not_na.shape)
                 tensor_data_flat.append(feature_flat_not_na)
             # append features except the target
             preprocessed_features_flat_per_fold.append(tensor_data_flat)
 
             # predictions
-            y_pred = self.model_pipeline.predict_fold(tensor_data, fold)
-            y_pred_original = features_preprocessing.scalers["y_target"][0].inverse_transform(y_pred.reshape(-1, y_pred.shape[-1]))
+            not_na_ids = (torch.stack(tensor_not_na_indexes).sum(axis=0) == n_features).sum(axis=1) > 0
+            y_pred = self.model_pipeline.predict_fold(tensor_data, fold)[not_na_ids]
+            y_pred_flat = y_pred.reshape(-1, y_pred.shape[-1])
+            y_pred_original = features_preprocessing.scalers["y_target"][0].inverse_transform(y_pred_flat)
             y_pred_original = np.exp(y_pred_original.reshape(y_pred.shape))
             predictions_per_fold.append(y_pred_original)
 
