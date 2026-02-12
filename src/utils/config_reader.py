@@ -52,6 +52,7 @@ def read_config(path_to_config="./config.ini"):
     # ------------------- training_parameters ---------------------
     config_dict['training_parameters'] = {}
     config_dict['training_parameters']['save_models'] = config.getboolean('training_parameters', 'save_models')
+    config_dict['training_parameters']['reduce_on_plateau'] = config.getboolean('training_parameters', 'reduce_on_plateau')
     config_dict['training_parameters']['n_folds'] = config.getint('training_parameters', 'n_folds')
     config_dict['training_parameters']['batch_size'] = config.getint('training_parameters', 'batch_size')
     try:

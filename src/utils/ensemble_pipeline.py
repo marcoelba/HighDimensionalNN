@@ -71,7 +71,7 @@ class EnsemblePipeline:
         )
         return x
     
-    def train(self, dict_arrays):
+    def train(self, dict_arrays, reduce_on_plateau=False):
         # save current model init definition
         if self.config_dict["training_parameters"]["save_models"]:
             save_pickle(
@@ -155,7 +155,12 @@ class EnsemblePipeline:
             optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
             # Training Loop
-            trainer = training_wrapper.Training(train_dataloader, val_dataloader, noisy_gradient=False)
+            trainer = training_wrapper.Training(
+                train_dataloader,
+                val_dataloader,
+                reduce_on_plateau=reduce_on_plateau,
+                noisy_gradient=False
+            )
             trainer.training_loop(
                 model,
                 optimizer,
