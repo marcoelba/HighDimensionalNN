@@ -22,6 +22,7 @@ os.makedirs(PATH_PLOTS, exist_ok = True)
 # Load data
 data = CustomData(config_dict, data_dir=config_dict["script_parameters"]["data_folder"])
 dict_arrays = data.load_and_process_data(data_dir=config_dict["script_parameters"]["data_folder"])
+array_names = list(config_dict['data_arrays'].keys())
 
 # model
 model_pipeline = EnsemblePipeline(
@@ -45,8 +46,8 @@ shapley_values_per_feature = load_pickle(
 for time_point in range(n_timepoints):
     shap_summary_plot_feature(
         [shapley_values_per_feature[0]],
-        [dict_arrays["genes"]],
-        [data.features_names["genes_names"]],
+        [dict_arrays[array_names[0]]],
+        [data.features_names[array_names[0]]],
         time_point=time_point,
         title="Genes",
         time_label=time_labels[time_point],
@@ -57,8 +58,8 @@ for time_point in range(n_timepoints):
 for time_point in range(n_timepoints):
     shap_summary_plot_feature(
         [shapley_values_per_feature[1]],
-        [dict_arrays["metabolites"]],
-        [data.features_names["metab_names"]],
+        [dict_arrays[array_names[1]]],
+        [data.features_names[array_names[1]]],
         time_point=time_point,
         title="Metabolites",
         time_label=time_labels[time_point],
@@ -66,11 +67,17 @@ for time_point in range(n_timepoints):
     )
 
 # Control variables
+plot_meals_shap = False
+control_vars_to_plot = data.features_names[array_names[2]]
+if not plot_meals_shap:
+    control_vars_to_plot = [(i, feat) for i, feat in enumerate(control_vars_to_plot) if "Meal" not in feat]
+    indices_vars_to_plot, control_vars_to_plot = zip(*control_vars_to_plot)
+
 for time_point in range(n_timepoints):
     shap_summary_plot_feature(
-        [shapley_values_per_feature[2], shapley_values_per_feature[3]],
-        [dict_arrays["static_patient_features"], dict_arrays["y_baseline"]],
-        [config_dict["data_arrays"]["static_patient_features"], ["Baseline"]],
+        [shapley_values_per_feature[2][:, :, :, indices_vars_to_plot], shapley_values_per_feature[3]],
+        [dict_arrays[array_names[2]][..., indices_vars_to_plot], dict_arrays[array_names[3]]],
+        [control_vars_to_plot, [data.features_names[array_names[3]]]],
         time_point=time_point,
         title="Control variables",
         time_label=time_labels[time_point],

@@ -7,10 +7,10 @@ from sklearn.preprocessing import StandardScaler
 
 
 class Preprocessing:
-    def __init__(self, config_dict: dict, scalers: dict=None):
+    def __init__(self, config_dict: dict, feature_names: dict, scalers: dict=None):
         self.config_dict = config_dict
         self.features_to_preprocess = config_dict["preprocess"]
-        self.data_arrays = config_dict["data_arrays"]
+        self.data_arrays = feature_names
         
         if scalers is None:
             self.scalers = dict()

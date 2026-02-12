@@ -71,7 +71,7 @@ class EnsemblePipeline:
         )
         return x
     
-    def train(self, dict_arrays, reduce_on_plateau=False):
+    def train(self, dict_arrays, feature_names, reduce_on_plateau=False):
         # save current model init definition
         if self.config_dict["training_parameters"]["save_models"]:
             save_pickle(
@@ -106,7 +106,7 @@ class EnsemblePipeline:
             dict_val = {name: arr[train_mask == 0] for name, arr in dict_arrays.items()}
 
             # train and apply feature preprocessing
-            features_preprocessing = self.preprocessing_class(self.config_dict)
+            features_preprocessing = self.preprocessing_class(self.config_dict, feature_names)
             features_preprocessing.train(dict_train)
             self.all_scalers.append(features_preprocessing)
 

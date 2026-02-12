@@ -26,6 +26,7 @@ os.makedirs(PATH_PLOTS, exist_ok = True)
 # Load data
 data = CustomData(config_dict, data_dir=config_dict["script_parameters"]["data_folder"])
 dict_arrays = data.load_and_process_data(data_dir=config_dict["script_parameters"]["data_folder"])
+array_names = list(config_dict['data_arrays'].keys())
 
 # model
 model_pipeline = EnsemblePipeline(
@@ -52,10 +53,10 @@ predictions = np.nanmean(np.stack(predictions_per_fold), axis=(0, 2))
 time_predictions_mean = predictions.mean(axis=0)
 
 all_features_names = np.concatenate([
-    data.features_names["genes_names"],
-    data.features_names["metab_names"],
-    np.array(config_dict["data_arrays"]["static_patient_features"]),
-    np.array(["Baseline"])
+    data.features_names[array_names[0]],
+    data.features_names[array_names[1]],
+    np.array(data.features_names[array_names[2]]),
+    np.array([data.features_names[array_names[3]]])
 ])
 
 # concatenate shapley values for all features, averaging over folds (0) and meals (2)
@@ -66,10 +67,10 @@ all_shapley_values = np.concatenate(
 
 # Concatenate the features, by taking the mean over meals (second dimension)
 all_features = np.concatenate([
-    np.nanmean(dict_arrays["genes"], axis=1),
-    np.nanmean(dict_arrays["metabolites"], axis=1),
-    np.nanmean(dict_arrays["static_patient_features"], axis=1),
-    np.nanmean(np.exp(dict_arrays["y_baseline"]), axis=1)[..., -1]
+    np.nanmean(dict_arrays[array_names[0]], axis=1),
+    np.nanmean(dict_arrays[array_names[1]], axis=1),
+    np.nanmean(dict_arrays[array_names[2]], axis=1),
+    np.nanmean(np.exp(dict_arrays[array_names[3]]), axis=1)[..., -1]
     ], axis=-1
 )
 

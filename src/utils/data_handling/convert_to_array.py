@@ -1,6 +1,8 @@
 # Convert long format data to multidimensional arrays
 import numpy as np
 import pandas as pd
+from sklearn.preprocessing import OneHotEncoder
+
 
 def convert_to_static_multidim_array(
     df: pd.DataFrame,
@@ -46,6 +48,16 @@ def convert_to_static_multidim_array(
     unique_ids = sorted(df[patient_ID_col].unique())
     unique_meals = sorted(df[meal_col].dropna().unique())
     max_visits = len(unique_meals)
+
+    if "Meal" in cols_to_extract:
+        ohe = OneHotEncoder()
+        ohe.fit(df_time1[["Meal"]])
+        ohe_meal = ohe.transform(df_time1[["Meal"]]).toarray()
+        ohe_meal_colnames = ohe.get_feature_names_out()
+        df_time1[ohe_meal_colnames] = ohe_meal
+        # attach new names to cols_to_extract (and remove Meal)
+        cols_to_extract = [col for col in cols_to_extract if col != "Meal"]
+        cols_to_extract.extend(ohe_meal_colnames)
     n_features = len(cols_to_extract)
 
     # unique meal to number mapping
@@ -62,7 +74,10 @@ def convert_to_static_multidim_array(
         for _, row in id_data.iterrows():
             meal = row[meal_col]
             for cov_idx, cov in enumerate(cols_to_extract):
-                result_array[idx, meal_to_idx[meal], cov_idx] = row[cov]
+                if cov == "Meal":
+                    meal_to_idx[row[cov]]
+                else:
+                    result_array[idx, meal_to_idx[meal], cov_idx] = row[cov]
 
     if verbose:
         print("Original DataFrame:")
@@ -72,7 +87,7 @@ def convert_to_static_multidim_array(
         print(result_array[0])
         print(result_array[1])
 
-    return result_array
+    return result_array, cols_to_extract
 
 
 def convert_to_longitudinal_multidim_array(

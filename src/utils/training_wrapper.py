@@ -32,6 +32,7 @@ class Training:
         self.best_val_loss = float('inf')
         self.best_model = None
         self.best_iteration = None
+        self.scheduler = None
     
     def add_gradient_noise(self, model, noise_std=0.01):
         """
@@ -49,15 +50,16 @@ class Training:
                     param.grad.add_(noise)
 
     def training_loop(self, model, optimizer, num_epochs, gradient_noise_std=0.01):
-        if self.reduce_on_plateau:
-            scheduler = ReduceLROnPlateau(
-                optimizer,
-                mode='min',
-                factor=0.5,        # Halve the learning rate
-                patience=200,        # Wait 5 epochs without improvement
-                threshold=1e-4,    # Minimum improvement of 0.0001
-                min_lr=1e-6      # Don't go below 0.0000001
-            )
+
+        self.scheduler = ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=0.5,        # Halve the learning rate
+            patience=200,        # Wait 5 epochs without improvement
+            threshold=1e-4,    # Minimum improvement of 0.0001
+            min_lr=1e-6      # Don't go below 0.0000001
+        )
+
         for epoch in range(num_epochs):
             model.train()
             train_loss = 0
@@ -105,7 +107,7 @@ class Training:
                 self.losses["val_pred"].append(val_pred_loss / self.len_val)
 
                 if self.reduce_on_plateau:
-                    scheduler.step(val_loss)  # <-- THIS is where ReduceLROnPlateau checks improvement
+                    self.scheduler.step(val_loss)  # <-- THIS is where ReduceLROnPlateau checks improvement
 
                 if self.verbose:
                     if (epoch % 10) == 0:
@@ -116,3 +118,5 @@ class Training:
                     self.best_val_loss = val_loss
                     self.best_model = copy.deepcopy(model)
                     self.best_iteration = epoch
+        print(f"Best Epoch: {self.best_iteration}")
+        print(f"Last used LR:\n {self.scheduler.get_last_lr()}")
