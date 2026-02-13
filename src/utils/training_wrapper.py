@@ -119,4 +119,5 @@ class Training:
                     self.best_model = copy.deepcopy(model)
                     self.best_iteration = epoch
         print(f"Best Epoch: {self.best_iteration}")
-        print(f"Last used LR:\n {self.scheduler.get_last_lr()}")
+        if self.reduce_on_plateau:
+            print(f"Last used LR:\n {self.scheduler.get_last_lr()}")
