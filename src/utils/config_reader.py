@@ -53,8 +53,12 @@ def read_config(path_to_config="./config.ini"):
     config_dict['training_parameters'] = {}
     config_dict['training_parameters']['save_models'] = config.getboolean('training_parameters', 'save_models')
     config_dict['training_parameters']['reduce_on_plateau'] = config.getboolean('training_parameters', 'reduce_on_plateau')
+    config_dict['training_parameters']['noisy_gradient'] = config.getboolean('training_parameters', 'noisy_gradient')
     config_dict['training_parameters']['n_folds'] = config.getint('training_parameters', 'n_folds')
     config_dict['training_parameters']['batch_size'] = config.getint('training_parameters', 'batch_size')
+    config_dict['training_parameters']['gradient_noise_std'] = config.getfloat('training_parameters', 'gradient_noise_std')
+    config_dict['training_parameters']['alpha_conf_pred'] = config.getfloat('training_parameters', 'alpha_conf_pred')
+    config_dict['training_parameters']['use_cc_predictions'] = config.getboolean('training_parameters', 'use_cc_predictions')
     try:
         config_dict['training_parameters']['batch_size_val'] = config.getint('training_parameters', 'batch_size_val')
     except ValueError:

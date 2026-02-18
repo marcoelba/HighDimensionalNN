@@ -38,8 +38,7 @@ model_pipeline = EnsemblePipeline(
 # train k-fold pipeline
 model_pipeline.train(
     dict_arrays,
-    feature_names=data.features_names,
-    reduce_on_plateau=config_dict['training_parameters']['reduce_on_plateau']
+    feature_names=data.features_names
 )
 
 print("\n ---------------------------------------")

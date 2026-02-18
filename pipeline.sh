@@ -22,6 +22,7 @@ setup_temp_directory
 STATUS_FILE="./pipeline_log.txt"
 SCRIPTS=(
     "model_fitting" 
+    "cross_conformal_predictions" 
     "model_analysis" 
     "model_predictions"
     "generate_shapley_values" 

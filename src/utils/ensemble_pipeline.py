@@ -71,7 +71,7 @@ class EnsemblePipeline:
         )
         return x
     
-    def train(self, dict_arrays, feature_names, reduce_on_plateau=False):
+    def train(self, dict_arrays, feature_names):
         # save current model init definition
         if self.config_dict["training_parameters"]["save_models"]:
             save_pickle(
@@ -158,14 +158,14 @@ class EnsemblePipeline:
             trainer = training_wrapper.Training(
                 train_dataloader,
                 val_dataloader,
-                reduce_on_plateau=reduce_on_plateau,
-                noisy_gradient=False
+                reduce_on_plateau=self.config_dict['training_parameters']['reduce_on_plateau'],
+                noisy_gradient=self.config_dict['training_parameters']['noisy_gradient']
             )
             trainer.training_loop(
                 model,
                 optimizer,
                 self.config_dict["training_parameters"]["num_epochs"],
-                gradient_noise_std=0.0
+                gradient_noise_std=self.config_dict["training_parameters"]["gradient_noise_std"]
             )
 
             # use the model at the best validation iteration
@@ -181,10 +181,13 @@ class EnsemblePipeline:
             # Run predictions only on the validation set of the k-fold
             model.eval()
             with torch.no_grad():
-                pred = model(val_dataloader.dataset.arrays)
-                predictions_val_folds.append(pred[-1].numpy())
-                ground_truth_val_folds.append(val_dataloader.dataset.arrays[-1].numpy())
-                print(f"RMSE fold {fold}: {np.sqrt(np.mean((pred[-1].numpy() - val_dataloader.dataset.arrays[-1].numpy())**2))}")
+                y_pred = model(val_dataloader.dataset.arrays)[-1].numpy()
+                y_true = val_dataloader.dataset.arrays[-1].numpy()
+                # inverse transform pred and gt
+                y_pred_original = self.target_inv_transform(features_preprocessing, y_pred, reshape=False)
+                y_true_original = self.target_inv_transform(features_preprocessing, y_true, reshape=False)
+                predictions_val_folds.append(y_pred_original)
+                ground_truth_val_folds.append(y_true_original)
 
             print(f"train loss: {np.min(trainer.losses['train'])}")
             print(f"val loss: {np.min(trainer.losses['val'])}")
@@ -250,9 +253,18 @@ class EnsemblePipeline:
             # get tensors
             tensor_data = [torch.FloatTensor(array).to(self.device) for key, array in dict_preproc.items()]
             y_pred = self.predict_fold(tensor_data, fold)
-            y_pred_original = features_preprocessing.scalers["y_target"][0].inverse_transform(y_pred.reshape(-1, y_pred.shape[-1]))
-            y_pred_original = y_pred_original.reshape(y_pred.shape)
+            y_pred_original = self.target_inv_transform(features_preprocessing, y_pred, reshape=True)
 
             all_predictions.append(y_pred.numpy())
             all_predictions_original.append(y_pred_original)
         return all_predictions, all_predictions_original
+
+    def target_inv_transform(self, features_preprocessing, y_pred, reshape: bool):
+        if reshape:
+            y_pred_original = features_preprocessing.scalers["y_target"][0].inverse_transform(y_pred.reshape(-1, y_pred.shape[-1]))
+            y_pred_original = y_pred_original.reshape(y_pred.shape)
+        else:
+            y_pred_original = features_preprocessing.scalers["y_target"][0].inverse_transform(y_pred)
+        return y_pred_original
+
+
