@@ -102,24 +102,31 @@ for patient_id in range(gt.shape[0]):
     patient_ub = upper_bounds[patient_id]
     
     # plot of true and predicted trajectories
-    fig = plt.figure()
+    n_good_meals = (~np.isnan(patient_gt[:, 0])).sum()
+    meal_counter = 0
+    fig, axs = plt.subplots(nrows=n_good_meals, ncols=1, sharex=True)
     for meal in range(n_meals):
         if np.isnan(patient_gt[meal]).sum() == 0:
-            plt.plot(patient_gt[meal], color=colors_seq[meal], label=legend_meal[meal])
-            plt.plot(patient_pred[meal], color=colors_seq[meal], linestyle="dashed")
+            if n_good_meals > 1:
+                ax = axs[meal_counter]
+            else:
+                ax = axs
+            ax.plot(patient_gt[meal], color=colors_seq[meal], label=legend_meal[meal])
+            ax.plot(patient_pred[meal], color=colors_seq[meal], linestyle="dashed")
             if config_dict['training_parameters']['use_cc_predictions']:
-                plt.plot(
-                    [cc_x_axis, cc_x_axis],
-                    [patient_lb[meal], patient_ub[meal]],
-                    marker='_',
-                    markersize=10,
+                ax.vlines(
+                    x=cc_x_axis,
+                    ymin=patient_lb[meal],
+                    ymax=patient_ub[meal],
                     color=colors_seq[meal],
-                    linestyle='None'
+                    linestyle='dotted'
                 )
+            ax.legend(loc="best")
+            meal_counter += 1
+    plt.subplots_adjust(hspace=0.0)
     plt.xticks(x_ticks, x_labels)
     plt.xlabel("Time")
-    plt.legend()
-    plt.title(title)
+    plt.suptitle(title)
     fig.savefig(f"{path_patient_plots}/{figure_name}.pdf", format="pdf")
     plt.close()
 
@@ -138,18 +145,9 @@ fig = plt.figure()
 for meal in range(n_meals):
     plt.plot(gt_per_meal[meal], color=colors_seq[meal], label=legend_meal[meal])
     plt.plot(pred_per_meal[meal], color=colors_seq[meal], linestyle="dashed")
-    if config_dict['training_parameters']['use_cc_predictions']:
-        plt.plot(
-            [cc_x_axis, cc_x_axis],
-            [meals_lb[meal], meals_ub[meal]],
-            marker='_',
-            markersize=10,
-            color=colors_seq[meal],
-            linestyle='None'
-        )
+plt.legend(loc="best")
 plt.xticks(x_ticks, x_labels)
 plt.xlabel("Time")
-plt.legend()
 plt.title(title)
 fig.savefig(f"{PATH_RESULTS}/{figure_name}.pdf", format="pdf")
 plt.close()
@@ -169,15 +167,6 @@ fig = plt.figure()
 plt.plot(gt_mean, color="blue", label="Ground truth")
 plt.plot(pred_mean, color="blue", linestyle="dashed", label="Prediction")
 plt.xticks(x_ticks, x_labels)
-if config_dict['training_parameters']['use_cc_predictions']:
-    plt.plot(
-        [cc_x_axis, cc_x_axis],
-        [mean_lb, mean_ub],
-        marker='_',
-        markersize=10,
-        color="blue",
-        linestyle='None'
-    )
 plt.xlabel("Time")
 plt.legend()
 plt.title(title)
