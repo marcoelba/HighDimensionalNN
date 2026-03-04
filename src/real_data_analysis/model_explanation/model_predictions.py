@@ -100,11 +100,37 @@ for patient_id in range(gt.shape[0]):
     # CC bounds
     patient_lb = lower_bounds[patient_id]
     patient_ub = upper_bounds[patient_id]
+
+    # Calculate global y-axis limits for this patient
+    # Get all valid (non-NaN) values across all meals
+    all_values = []
+    for meal in range(n_meals):
+        if np.isnan(patient_gt[meal]).sum() == 0:  # If meal has valid data
+            all_values.extend(patient_gt[meal])
+            all_values.extend(patient_pred[meal])
+            if config_dict['training_parameters']['use_cc_predictions']:
+                all_values.extend(patient_lb[meal])  # Add lower bound
+                all_values.extend(patient_ub[meal])  # Add upper bound
     
+    # Calculate global min and max with a small padding (optional)
+    if all_values:  # Make sure we have values
+        y_min = np.nanmin(all_values)
+        y_max = np.nanmax(all_values)
+        # Add 5% padding to make plots look better
+        y_range = y_max - y_min
+        y_min = y_min - 0.05 * y_range
+        y_max = y_max + 0.05 * y_range
+    else:
+        y_min, y_max = 0, 1  # Fallback if no data
+
     # plot of true and predicted trajectories
     n_good_meals = (~np.isnan(patient_gt[:, 0])).sum()
     meal_counter = 0
-    fig, axs = plt.subplots(nrows=n_good_meals, ncols=1, sharex=True)
+    if n_good_meals == 1:
+        height_fig = 4
+    else:
+        height_fig = 3 * n_good_meals
+    fig, axs = plt.subplots(nrows=n_good_meals, figsize=(6.5, height_fig), ncols=1, sharex=True)
     for meal in range(n_meals):
         if np.isnan(patient_gt[meal]).sum() == 0:
             if n_good_meals > 1:
@@ -122,6 +148,7 @@ for patient_id in range(gt.shape[0]):
                     linestyle='dotted'
                 )
             ax.legend(loc="best")
+            ax.set_ylim(y_min, y_max)
             meal_counter += 1
     plt.subplots_adjust(hspace=0.0)
     plt.xticks(x_ticks, x_labels)

@@ -28,9 +28,7 @@ SCRIPTS=(
     "generate_shapley_values" 
     "global_shapley_analysis" 
     "patient_shapley_analysis" 
-#    "patient_shapley_groups_explanations"
-#    "generate_latent_space_shapley_values" 
-#    "latent_shapley_analysis" 
+    "patient_shapley_groups_analysis"
 )
 
 # Initialize or read status file

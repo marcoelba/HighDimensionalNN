@@ -52,24 +52,32 @@ predictions_per_fold = load_pickle(
 predictions = np.nanmean(np.stack(predictions_per_fold), axis=(0, 2))
 time_predictions_mean = predictions.mean(axis=0)
 
+plot_meals_shap = False
+control_vars_to_plot = data.features_names[array_names[2]]
+if not plot_meals_shap:
+    control_vars_to_plot = [(i, feat) for i, feat in enumerate(control_vars_to_plot) if "Meal" not in feat]
+    indices_vars_to_plot, control_vars_to_plot = zip(*control_vars_to_plot)
+
 all_features_names = np.concatenate([
     data.features_names[array_names[0]],
     data.features_names[array_names[1]],
-    np.array(data.features_names[array_names[2]]),
+    np.array(control_vars_to_plot),
     np.array([data.features_names[array_names[3]]])
 ])
 
-# concatenate shapley values for all features, averaging over folds (0) and meals (2)
-all_shapley_values = np.concatenate(
-    [np.nanmean(shapley_feat, axis=(0, 2)) for shapley_feat in shapley_values_per_feature],
-    axis=-2
+all_shapley_values = np.concatenate([
+    np.nanmean(shapley_values_per_feature[0], axis=(0, 2)),
+    np.nanmean(shapley_values_per_feature[1], axis=(0, 2)),
+    np.nanmean(shapley_values_per_feature[2][:, :, :, indices_vars_to_plot], axis=(0, 2)),
+    np.nanmean(shapley_values_per_feature[3], axis=(0, 2))
+    ], axis=-2
 )
 
 # Concatenate the features, by taking the mean over meals (second dimension)
 all_features = np.concatenate([
     np.nanmean(dict_arrays[array_names[0]], axis=1),
     np.nanmean(dict_arrays[array_names[1]], axis=1),
-    np.nanmean(dict_arrays[array_names[2]], axis=1),
+    np.nanmean(dict_arrays[array_names[2]][..., indices_vars_to_plot], axis=1),
     np.nanmean(np.exp(dict_arrays[array_names[3]]), axis=1)[..., -1]
     ], axis=-1
 )
@@ -96,7 +104,7 @@ for patient_id in range(all_features.shape[0]):
         )
 
         fig = plt.figure()
-        shap.plots.waterfall(explanation, show=False, max_display=25)
+        shap.plots.bar(explanation, show=False, max_display=25)
         fig.set_size_inches(20, 15)  # change after because waterfall resize the fig
         # plt.show()
         plt.title(f"Patient {patient_id} - Shapley values - Time {time_labels[time_point]}", loc='left', fontsize=20)
